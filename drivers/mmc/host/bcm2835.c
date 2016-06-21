@@ -138,22 +138,16 @@ struct bcm2835_host {
 	u32			phys_addr;
 
 	struct mmc_host		*mmc;
+	struct platform_device	*pdev;
 
 	u32			pio_timeout;	/* In jiffies */
-
 	int			clock;		/* Current clock speed */
-
 	unsigned int		max_clk;	/* Max possible freq */
-
 	struct tasklet_struct	finish_tasklet;	/* Tasklet structures */
-
 	struct work_struct	cmd_wait_wq;	/* Workqueue function */
-
 	struct timer_list	timer;		/* Timer for timeouts */
-
 	struct sg_mapping_iter	sg_miter;	/* SG state for PIO */
 	unsigned int		blocks;		/* remaining PIO blocks */
-
 	int			irq;		/* Device IRQ */
 
 	u32			cmd_quick_poll_retries;
@@ -163,202 +157,142 @@ struct bcm2835_host {
 	u32			hcfg;
 	u32			cdiv;
 
-	/* Current request */
-	struct mmc_request		*mrq;
-	/* Current command */
-	struct mmc_command		*cmd;
-	/* Current data request */
-	struct mmc_data			*data;
-	/* Data finished before cmd */
-	bool				data_complete:1;
-	/* Drain the fifo when finishing */
-	bool				flush_fifo:1;
-	/* Wait for busy interrupt */
-	bool				use_busy:1;
-	/* Send CMD23 */
-	bool				use_sbc:1;
+	struct mmc_request	*mrq;		/* Current request */
+	struct mmc_command	*cmd;		/* Current command */
+	struct mmc_data		*data;		/* Current data request */
+	bool			data_complete:1;/* Data finished before cmd */
+	bool			flush_fifo:1;	/* Drain the fifo when finish */
+	bool			use_busy:1;	/* Wait for busy interrupt */
+	bool			use_sbc:1;	/* Send CMD23 */
 
-	/*DMA part*/
-	struct dma_chan			*dma_chan_rx;
-	struct dma_chan			*dma_chan_tx;
-	/* Channel in use */
-	struct dma_chan			*dma_chan;
+	/* DMA part */
+	struct dma_chan		*dma_chan_rx;
+	struct dma_chan		*dma_chan_tx;
+	struct dma_chan		*dma_chan;
 	struct dma_async_tx_descriptor	*dma_desc;
-	u32				dma_dir;
-	u32				drain_words;
-	struct page			*drain_page;
-	u32				drain_offset;
+	u32			dma_dir;
+	u32			drain_words;
+	struct page		*drain_page;
+	u32			drain_offset;
+	bool			use_dma;
 
-	bool				use_dma;
-	/*end of DMA part*/
-	/* maximum length of time spent waiting */
-	int				max_delay;
-	/* Maximum block count for PIO (0 = always DMA) */
-	u32				pio_limit;
+	int	max_delay;	/* maximum length of time spent waiting */
+	u32	pio_limit;	/* Maximum block count for PIO (0 = DMA) */
 };
 
-static inline void bcm2835_sdhost_write(struct bcm2835_host *host,
-					u32 val, int reg)
-{
-	writel(val, host->ioaddr + reg);
-}
-
-static inline u32 bcm2835_sdhost_read(struct bcm2835_host *host, int reg)
-{
-	return readl(host->ioaddr + reg);
-}
-
-static inline u32 bcm2835_sdhost_read_relaxed(struct bcm2835_host *host,
-					      int reg)
-{
-	return readl_relaxed(host->ioaddr + reg);
-}
-
-static void bcm2835_sdhost_dumpcmd(struct bcm2835_host *host,
-				   struct mmc_command *cmd,
-				   const char *label)
+static void bcm2835_dumpcmd(struct bcm2835_host *host,
+			    struct mmc_command *cmd,
+			    const char *label)
 {
 	if (!cmd)
 		return;
 
-	pr_err("%s:%c%s op %d arg 0x%x flags 0x%x - resp %08x %08x %08x %08x, err %d\n",
-	       mmc_hostname(host->mmc),
-	       (cmd == host->cmd) ? '>' : ' ',
-	       label, cmd->opcode, cmd->arg, cmd->flags,
-	       cmd->resp[0], cmd->resp[1], cmd->resp[2], cmd->resp[3],
-	       cmd->error);
+	dev_dbg(&host->pdev->dev,
+		"%c%s op %d arg 0x%x flags 0x%x - resp %08x %08x %08x %08x, err %d\n",
+		(cmd == host->cmd) ? '>' : ' ',
+		label, cmd->opcode, cmd->arg, cmd->flags,
+		cmd->resp[0], cmd->resp[1], cmd->resp[2], cmd->resp[3],
+		cmd->error);
 }
 
-static void bcm2835_sdhost_dumpregs(struct bcm2835_host *host)
+static void bcm2835_dumpregs(struct bcm2835_host *host)
 {
 	if (host->mrq) {
-		bcm2835_sdhost_dumpcmd(host, host->mrq->sbc, "sbc");
-		bcm2835_sdhost_dumpcmd(host, host->mrq->cmd, "cmd");
+		bcm2835_dumpcmd(host, host->mrq->sbc, "sbc");
+		bcm2835_dumpcmd(host, host->mrq->cmd, "cmd");
 		if (host->mrq->data) {
-			pr_err("%s: data blocks %x blksz %x - err %d\n",
-			       mmc_hostname(host->mmc),
-			       host->mrq->data->blocks,
-			       host->mrq->data->blksz,
-			       host->mrq->data->error);
+			dev_dbg(&host->pdev->dev,
+				"data blocks %x blksz %x - err %d\n",
+				host->mrq->data->blocks,
+				host->mrq->data->blksz,
+				host->mrq->data->error);
 		}
-		bcm2835_sdhost_dumpcmd(host, host->mrq->stop, "stop");
+		bcm2835_dumpcmd(host, host->mrq->stop, "stop");
 	}
 
-	pr_err("%s: =========== REGISTER DUMP ===========\n",
-	       mmc_hostname(host->mmc));
+	dev_dbg(&host->pdev->dev, "=========== REGISTER DUMP ===========\n");
 
-	pr_err("%s: SDCMD  0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDCMD));
-	pr_err("%s: SDARG  0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDARG));
-	pr_err("%s: SDTOUT 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDTOUT));
-	pr_err("%s: SDCDIV 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDCDIV));
-	pr_err("%s: SDRSP0 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDRSP0));
-	pr_err("%s: SDRSP1 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDRSP1));
-	pr_err("%s: SDRSP2 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDRSP2));
-	pr_err("%s: SDRSP3 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDRSP3));
-	pr_err("%s: SDHSTS 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDHSTS));
-	pr_err("%s: SDVDD  0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDVDD));
-	pr_err("%s: SDEDM  0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDEDM));
-	pr_err("%s: SDHCFG 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDHCFG));
-	pr_err("%s: SDHBCT 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDHBCT));
-	pr_err("%s: SDHBLC 0x%08x\n",
-	       mmc_hostname(host->mmc),
-	       bcm2835_sdhost_read(host, SDHBLC));
+	dev_dbg(&host->pdev->dev, "SDCMD  0x%08x\n",
+		readl(host->ioaddr + SDCMD));
+	dev_dbg(&host->pdev->dev, "SDARG  0x%08x\n",
+		readl(host->ioaddr + SDARG));
+	dev_dbg(&host->pdev->dev, "SDTOUT 0x%08x\n",
+		readl(host->ioaddr + SDTOUT));
+	dev_dbg(&host->pdev->dev, "SDCDIV 0x%08x\n",
+		readl(host->ioaddr + SDCDIV));
+	dev_dbg(&host->pdev->dev, "SDRSP0 0x%08x\n",
+		readl(host->ioaddr + SDRSP0));
+	dev_dbg(&host->pdev->dev, "SDRSP1 0x%08x\n",
+		readl(host->ioaddr + SDRSP1));
+	dev_dbg(&host->pdev->dev, "SDRSP2 0x%08x\n",
+		readl(host->ioaddr + SDRSP2));
+	dev_dbg(&host->pdev->dev, "SDRSP3 0x%08x\n",
+		readl(host->ioaddr + SDRSP3));
+	dev_dbg(&host->pdev->dev, "SDHSTS 0x%08x\n",
+		readl(host->ioaddr + SDHSTS));
+	dev_dbg(&host->pdev->dev, "SDVDD  0x%08x\n",
+		readl(host->ioaddr + SDVDD));
+	dev_dbg(&host->pdev->dev, "SDEDM  0x%08x\n",
+		readl(host->ioaddr + SDEDM));
+	dev_dbg(&host->pdev->dev, "SDHCFG 0x%08x\n",
+		readl(host->ioaddr + SDHCFG));
+	dev_dbg(&host->pdev->dev, "SDHBCT 0x%08x\n",
+		readl(host->ioaddr + SDHBCT));
+	dev_dbg(&host->pdev->dev, "SDHBLC 0x%08x\n",
+		readl(host->ioaddr + SDHBLC));
 
-	pr_err("%s: ===========================================\n",
-	       mmc_hostname(host->mmc));
+	dev_dbg(&host->pdev->dev, "===========================================\n");
 }
 
-static void bcm2835_sdhost_set_power(struct bcm2835_host *host, bool on)
+static void bcm2835_set_power(struct bcm2835_host *host, bool on)
 {
-	bcm2835_sdhost_write(host, on ? 1 : 0, SDVDD);
+	writel(on ? 1 : 0, host->ioaddr + SDVDD);
 }
 
-static void bcm2835_sdhost_reset_internal(struct bcm2835_host *host)
+static void bcm2835_reset_internal(struct bcm2835_host *host)
 {
 	u32 temp;
 
-	bcm2835_sdhost_set_power(host, false);
+	bcm2835_set_power(host, false);
 
-	bcm2835_sdhost_write(host, 0, SDCMD);
-	bcm2835_sdhost_write(host, 0, SDARG);
-	bcm2835_sdhost_write(host, 0xf00000, SDTOUT);
-	bcm2835_sdhost_write(host, 0, SDCDIV);
-	bcm2835_sdhost_write(host, 0x7f8, SDHSTS); /* Write 1s to clear */
-	bcm2835_sdhost_write(host, 0, SDHCFG);
-	bcm2835_sdhost_write(host, 0, SDHBCT);
-	bcm2835_sdhost_write(host, 0, SDHBLC);
+	writel(0, host->ioaddr + SDCMD);
+	writel(0, host->ioaddr + SDARG);
+	writel(0xf00000, host->ioaddr + SDTOUT);
+	writel(0, host->ioaddr + SDCDIV);
+	writel(0x7f8, host->ioaddr + SDHSTS); /* Write 1s to clear */
+	writel(0, host->ioaddr + SDHCFG);
+	writel(0, host->ioaddr + SDHBCT);
+	writel(0, host->ioaddr + SDHBLC);
 
 	/* Limit fifo usage due to silicon bug */
-	temp = bcm2835_sdhost_read(host, SDEDM);
+	temp = readl(host->ioaddr + SDEDM);
 	temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) |
 		  (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
 	temp |= (FIFO_READ_THRESHOLD << SDEDM_READ_THRESHOLD_SHIFT) |
 		(FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
-	bcm2835_sdhost_write(host, temp, SDEDM);
-	mdelay(10);
-	bcm2835_sdhost_set_power(host, true);
-	mdelay(10);
+	writel(temp, host->ioaddr + SDEDM);
+	msleep(20);
+	bcm2835_set_power(host, true);
+	msleep(20);
 	host->clock = 0;
-	bcm2835_sdhost_write(host, host->hcfg, SDHCFG);
-	bcm2835_sdhost_write(host, host->cdiv, SDCDIV);
-	mmiowb();
+	writel(host->hcfg, host->ioaddr + SDHCFG);
+	writel(host->cdiv, host->ioaddr + SDCDIV);
 }
 
-static void bcm2835_sdhost_reset(struct mmc_host *mmc)
+static void bcm2835_reset(struct mmc_host *mmc)
 {
 	struct bcm2835_host *host = mmc_priv(mmc);
-	unsigned long flags;
 
-	spin_lock_irqsave(&host->lock, flags);
-	bcm2835_sdhost_reset_internal(host);
-	spin_unlock_irqrestore(&host->lock, flags);
+	if (host->dma_chan)
+		dmaengine_terminate_sync(host->dma_chan);
+	tasklet_kill(&host->finish_tasklet);
+	bcm2835_reset_internal(host);
 }
 
-static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios);
+static void bcm2835_finish_command(struct bcm2835_host *host,
+				   unsigned long *irq_flags);
 
-static void bcm2835_sdhost_init(struct bcm2835_host *host, int soft)
-{
-	pr_debug("bcm2835_sdhost_init(%d)\n", soft);
-
-	/* Set interrupt enables */
-	host->hcfg = SDHCFG_BUSY_IRPT_EN;
-
-	bcm2835_sdhost_reset_internal(host);
-
-	if (soft) {
-		/* force clock reconfiguration */
-		host->clock = 0;
-		bcm2835_sdhost_set_ios(host->mmc, &host->mmc->ios);
-	}
-}
-
-static void bcm2835_sdhost_wait_transfer_complete(struct bcm2835_host *host)
+static void bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 {
 	int timediff;
 	u32 alternate_idle;
@@ -367,7 +301,7 @@ static void bcm2835_sdhost_wait_transfer_complete(struct bcm2835_host *host)
 	alternate_idle = (host->mrq->data->flags & MMC_DATA_READ) ?
 		SDEDM_FSM_READWAIT : SDEDM_FSM_WRITESTART1;
 
-	edm = bcm2835_sdhost_read(host, SDEDM);
+	edm = readl(host->ioaddr + SDEDM);
 
 	timediff = 0;
 
@@ -378,29 +312,28 @@ static void bcm2835_sdhost_wait_transfer_complete(struct bcm2835_host *host)
 		    (fsm == SDEDM_FSM_DATAMODE))
 			break;
 		if (fsm == alternate_idle) {
-			bcm2835_sdhost_write(host,
-					     edm | SDEDM_FORCE_DATA_MODE,
-					     SDEDM);
+			writel(edm | SDEDM_FORCE_DATA_MODE,
+			       host->ioaddr + SDEDM);
 			break;
 		}
 
 		timediff++;
 		if (timediff == 100000) {
-			pr_err("%s: wait_transfer_complete - still waiting after %d retries\n",
-			       mmc_hostname(host->mmc),
-			       timediff);
-			bcm2835_sdhost_dumpregs(host);
+			dev_err(&host->pdev->dev,
+				"wait_transfer_complete - still waiting after %d retries\n",
+				timediff);
+			bcm2835_dumpregs(host);
 			host->mrq->data->error = -ETIMEDOUT;
 			return;
 		}
 		cpu_relax();
-		edm = bcm2835_sdhost_read(host, SDEDM);
+		edm = readl(host->ioaddr + SDEDM);
 	}
 }
 
-static void bcm2835_sdhost_finish_data(struct bcm2835_host *host);
+static void bcm2835_finish_data(struct bcm2835_host *host);
 
-static void bcm2835_sdhost_dma_complete(void *param)
+static void bcm2835_dma_complete(void *param)
 {
 	struct bcm2835_host *host = param;
 	struct mmc_data *data = host->data;
@@ -424,24 +357,23 @@ static void bcm2835_sdhost_dma_complete(void *param)
 		buf = page + host->drain_offset;
 
 		while (host->drain_words) {
-			u32 edm = bcm2835_sdhost_read(host, SDEDM);
+			u32 edm = readl(host->ioaddr + SDEDM);
 
 			if ((edm >> 4) & 0x1f)
-				*(buf++) = bcm2835_sdhost_read(host,
-							       SDDATA);
+				*(buf++) = readl(host->ioaddr + SDDATA);
 			host->drain_words--;
 		}
 
 		kunmap_atomic(page);
 	}
 
-	bcm2835_sdhost_finish_data(host);
+	bcm2835_finish_data(host);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void bcm2835_sdhost_transfer_block_pio(struct bcm2835_host *host,
-					      bool is_read)
+static void bcm2835_transfer_block_pio(struct bcm2835_host *host,
+				       bool is_read)
 {
 	unsigned long flags;
 	size_t blksize, len;
@@ -483,7 +415,7 @@ static void bcm2835_sdhost_transfer_block_pio(struct bcm2835_host *host,
 			burst_words = SDDATA_FIFO_PIO_BURST;
 			if (burst_words > copy_words)
 				burst_words = copy_words;
-			edm = bcm2835_sdhost_read(host, SDEDM);
+			edm = readl(host->ioaddr + SDEDM);
 			if (is_read)
 				words = ((edm >> 4) & 0x1f);
 			else
@@ -500,20 +432,19 @@ static void bcm2835_sdhost_transfer_block_pio(struct bcm2835_host *host,
 				     (fsm_state != SDEDM_FSM_WRITEDATA &&
 				      fsm_state != SDEDM_FSM_WRITESTART1 &&
 				      fsm_state != SDEDM_FSM_WRITESTART2))) {
-					hsts = bcm2835_sdhost_read(host,
-								   SDHSTS);
-					pr_err("%s: fsm %x, hsts %x\n",
-					       mmc_hostname(host->mmc),
-					       fsm_state, hsts);
+					hsts = readl(host->ioaddr + SDHSTS);
+					dev_err(&host->pdev->dev,
+						"fsm %x, hsts %x\n",
+						fsm_state, hsts);
 					if (hsts & SDHSTS_ERROR_MASK)
 						break;
 				}
 
 				if (time_after(jiffies, wait_max)) {
-					pr_err("%s: PIO %s timeout - EDM %x\n",
-					       is_read ? "read" : "write",
-					       mmc_hostname(host->mmc),
-					       edm);
+					dev_err(&host->pdev->dev,
+						"PIO %s timeout - EDM %x\n",
+						is_read ? "read" : "write",
+						edm);
 					hsts = SDHSTS_REW_TIME_OUT;
 					break;
 				}
@@ -528,11 +459,9 @@ static void bcm2835_sdhost_transfer_block_pio(struct bcm2835_host *host,
 
 			while (words) {
 				if (is_read) {
-					*(buf++) = bcm2835_sdhost_read(host,
-								       SDDATA);
+					*(buf++) = readl(host->ioaddr + SDDATA);
 				} else {
-					bcm2835_sdhost_write(host, *(buf++),
-							     SDDATA);
+					writel(*(buf++), host->ioaddr + SDDATA);
 				}
 				words--;
 			}
@@ -547,41 +476,39 @@ static void bcm2835_sdhost_transfer_block_pio(struct bcm2835_host *host,
 	local_irq_restore(flags);
 }
 
-static void bcm2835_sdhost_transfer_pio(struct bcm2835_host *host)
+static void bcm2835_transfer_pio(struct bcm2835_host *host)
 {
 	u32 sdhsts;
 	bool is_read;
 
 	is_read = (host->data->flags & MMC_DATA_READ) != 0;
-	bcm2835_sdhost_transfer_block_pio(host, is_read);
+	bcm2835_transfer_block_pio(host, is_read);
 
-	sdhsts = bcm2835_sdhost_read(host, SDHSTS);
+	sdhsts = readl(host->ioaddr + SDHSTS);
 	if (sdhsts & (SDHSTS_CRC16_ERROR |
 		      SDHSTS_CRC7_ERROR |
 		      SDHSTS_FIFO_ERROR)) {
-		pr_err("%s: %s transfer error - HSTS %x\n",
-		       mmc_hostname(host->mmc),
-		       is_read ? "read" : "write",
-		       sdhsts);
+		dev_err(&host->pdev->dev, "%s transfer error - HSTS %x\n",
+			is_read ? "read" : "write",
+			sdhsts);
 		host->data->error = -EILSEQ;
 	} else if ((sdhsts & (SDHSTS_CMD_TIME_OUT |
 			      SDHSTS_REW_TIME_OUT))) {
-		pr_err("%s: %s timeout error - HSTS %x\n",
-		       mmc_hostname(host->mmc),
-		       is_read ? "read" : "write",
-		       sdhsts);
+		dev_err(&host->pdev->dev, "%s timeout error - HSTS %x\n",
+			is_read ? "read" : "write",
+			sdhsts);
 		host->data->error = -ETIMEDOUT;
 	}
 }
 
-static void bcm2835_sdhost_prepare_dma(struct bcm2835_host *host,
-				       struct mmc_data *data)
+static void bcm2835_prepare_dma(struct bcm2835_host *host,
+				struct mmc_data *data)
 {
 	int len, dir_data, dir_slave;
 	struct dma_async_tx_descriptor *desc = NULL;
 	struct dma_chan *dma_chan;
 
-	pr_debug("bcm2835_sdhost_prepare_dma()\n");
+	dev_dbg(&host->pdev->dev, "bcm2835_prepare_dma()\n");
 
 	if (data->flags & MMC_DATA_READ) {
 		dma_chan = host->dma_chan_rx;
@@ -631,7 +558,7 @@ static void bcm2835_sdhost_prepare_dma(struct bcm2835_host *host,
 	}
 
 	if (desc) {
-		desc->callback = bcm2835_sdhost_dma_complete;
+		desc->callback = bcm2835_dma_complete;
 		desc->callback_param = host;
 		host->dma_desc = desc;
 		host->dma_chan = dma_chan;
@@ -639,13 +566,13 @@ static void bcm2835_sdhost_prepare_dma(struct bcm2835_host *host,
 	}
 }
 
-static void bcm2835_sdhost_start_dma(struct bcm2835_host *host)
+static void bcm2835_start_dma(struct bcm2835_host *host)
 {
 	dmaengine_submit(host->dma_desc);
 	dma_async_issue_pending(host->dma_chan);
 }
 
-static void bcm2835_sdhost_set_transfer_irqs(struct bcm2835_host *host)
+static void bcm2835_set_transfer_irqs(struct bcm2835_host *host)
 {
 	u32 all_irqs = SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN |
 		SDHCFG_BUSY_IRPT_EN;
@@ -659,11 +586,11 @@ static void bcm2835_sdhost_set_transfer_irqs(struct bcm2835_host *host)
 			SDHCFG_BUSY_IRPT_EN;
 	}
 
-	bcm2835_sdhost_write(host, host->hcfg, SDHCFG);
+	writel(host->hcfg, host->ioaddr + SDHCFG);
 }
 
-static void bcm2835_sdhost_prepare_data(struct bcm2835_host *host,
-					struct mmc_command *cmd)
+static void bcm2835_prepare_data(struct bcm2835_host *host,
+				 struct mmc_command *cmd)
 {
 	struct mmc_data *data = cmd->data;
 
@@ -694,14 +621,14 @@ static void bcm2835_sdhost_prepare_data(struct bcm2835_host *host,
 		host->blocks = data->blocks;
 	}
 
-	bcm2835_sdhost_set_transfer_irqs(host);
+	bcm2835_set_transfer_irqs(host);
 
-	bcm2835_sdhost_write(host, data->blksz, SDHBCT);
-	bcm2835_sdhost_write(host, data->blocks, SDHBLC);
+	writel(data->blksz, host->ioaddr + SDHBCT);
+	writel(data->blocks, host->ioaddr + SDHBLC);
 }
 
-bool bcm2835_sdhost_send_command(struct bcm2835_host *host,
-				 struct mmc_command *cmd)
+bool bcm2835_send_command(struct bcm2835_host *host,
+			  struct mmc_command *cmd)
 {
 	u32 sdcmd, sdhsts;
 	unsigned long timeout;
@@ -710,26 +637,26 @@ bool bcm2835_sdhost_send_command(struct bcm2835_host *host,
 	WARN_ON(host->cmd);
 
 	if (cmd->data) {
-		pr_debug("%s: send_command %d 0x%x (flags 0x%x) - %s %d*%d\n",
-			 mmc_hostname(host->mmc),
-			 cmd->opcode, cmd->arg, cmd->flags,
-			 (cmd->data->flags & MMC_DATA_READ) ?
-			 "read" : "write", cmd->data->blocks,
-			 cmd->data->blksz);
+		dev_dbg(&host->pdev->dev,
+			"send_command %d 0x%x (flags 0x%x) - %s %d*%d\n",
+			cmd->opcode, cmd->arg, cmd->flags,
+			(cmd->data->flags & MMC_DATA_READ) ?
+			"read" : "write", cmd->data->blocks,
+			cmd->data->blksz);
 	} else {
-		pr_debug("%s: send_command %d 0x%x (flags 0x%x)\n",
-			 mmc_hostname(host->mmc),
-			 cmd->opcode, cmd->arg, cmd->flags);
+		dev_dbg(&host->pdev->dev,
+			"send_command %d 0x%x (flags 0x%x)\n",
+			cmd->opcode, cmd->arg, cmd->flags);
 	}
 
 	/* Wait max 100 ms */
 	timeout = 10000;
 
-	while (bcm2835_sdhost_read(host, SDCMD) & SDCMD_NEW_FLAG) {
+	while (readl(host->ioaddr + SDCMD) & SDCMD_NEW_FLAG) {
 		if (timeout == 0) {
-			pr_err("%s: previous command never completed.\n",
-			       mmc_hostname(host->mmc));
-			bcm2835_sdhost_dumpregs(host);
+			dev_err(&host->pdev->dev,
+				"previous command never completed.\n");
+			bcm2835_dumpregs(host);
 			cmd->error = -EILSEQ;
 			tasklet_schedule(&host->finish_tasklet);
 			return false;
@@ -741,9 +668,8 @@ bool bcm2835_sdhost_send_command(struct bcm2835_host *host,
 	delay = (10000 - timeout) / 100;
 	if (delay > host->max_delay) {
 		host->max_delay = delay;
-		pr_warn("%s: controller hung for %d ms\n",
-			mmc_hostname(host->mmc),
-			host->max_delay);
+		dev_warn(&host->pdev->dev, "controller hung for %d ms\n",
+			 host->max_delay);
 	}
 
 	timeout = jiffies;
@@ -756,21 +682,20 @@ bool bcm2835_sdhost_send_command(struct bcm2835_host *host,
 	host->cmd = cmd;
 
 	/* Clear any error flags */
-	sdhsts = bcm2835_sdhost_read(host, SDHSTS);
+	sdhsts = readl(host->ioaddr + SDHSTS);
 	if (sdhsts & SDHSTS_ERROR_MASK)
-		bcm2835_sdhost_write(host, sdhsts, SDHSTS);
+		writel(sdhsts, host->ioaddr + SDHSTS);
 
 	if ((cmd->flags & MMC_RSP_136) && (cmd->flags & MMC_RSP_BUSY)) {
-		pr_err("%s: unsupported response type!\n",
-		       mmc_hostname(host->mmc));
+		dev_err(&host->pdev->dev, "unsupported response type!\n");
 		cmd->error = -EINVAL;
 		tasklet_schedule(&host->finish_tasklet);
 		return false;
 	}
 
-	bcm2835_sdhost_prepare_data(host, cmd);
+	bcm2835_prepare_data(host, cmd);
 
-	bcm2835_sdhost_write(host, cmd->arg, SDARG);
+	writel(cmd->arg, host->ioaddr + SDARG);
 
 	sdcmd = cmd->opcode & SDCMD_CMD_MASK;
 
@@ -793,15 +718,12 @@ bool bcm2835_sdhost_send_command(struct bcm2835_host *host,
 			sdcmd |= SDCMD_READ_CMD;
 	}
 
-	bcm2835_sdhost_write(host, sdcmd | SDCMD_NEW_FLAG, SDCMD);
+	writel(sdcmd | SDCMD_NEW_FLAG, host->ioaddr + SDCMD);
 
 	return true;
 }
 
-static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
-					  unsigned long *irq_flags);
-
-static void bcm2835_sdhost_transfer_complete(struct bcm2835_host *host)
+static void bcm2835_transfer_complete(struct bcm2835_host *host)
 {
 	struct mmc_data *data;
 
@@ -810,37 +732,37 @@ static void bcm2835_sdhost_transfer_complete(struct bcm2835_host *host)
 	data = host->data;
 	host->data = NULL;
 
-	pr_debug("transfer_complete(error %d, stop %d)\n",
-		 data->error, data->stop ? 1 : 0);
+	dev_dbg(&host->pdev->dev, "transfer_complete(error %d, stop %d)\n",
+		data->error, data->stop ? 1 : 0);
 
 	/* Need to send CMD12 if -
 	 * a) open-ended multiblock transfer (no CMD23)
 	 * b) error in multiblock transfer
 	 */
 	if (host->mrq->stop && (data->error || !host->use_sbc)) {
-		if (bcm2835_sdhost_send_command(host, host->mrq->stop)) {
+		if (bcm2835_send_command(host, host->mrq->stop)) {
 			/* No busy, so poll for completion */
 			if (!host->use_busy)
-				bcm2835_sdhost_finish_command(host, NULL);
+				bcm2835_finish_command(host, NULL);
 		}
 	} else {
-		bcm2835_sdhost_wait_transfer_complete(host);
+		bcm2835_wait_transfer_complete(host);
 		tasklet_schedule(&host->finish_tasklet);
 	}
 }
 
-static void bcm2835_sdhost_finish_data(struct bcm2835_host *host)
+static void bcm2835_finish_data(struct bcm2835_host *host)
 {
 	struct mmc_data *data;
 
 	data = host->data;
 
-	pr_debug("finish_data(error %d, stop %d, sbc %d)\n",
-		 data->error, data->stop ? 1 : 0,
-		 host->mrq->sbc ? 1 : 0);
+	dev_dbg(&host->pdev->dev, "finish_data(error %d, stop %d, sbc %d)\n",
+		data->error, data->stop ? 1 : 0,
+		host->mrq->sbc ? 1 : 0);
 
 	host->hcfg &= ~(SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN);
-	bcm2835_sdhost_write(host, host->hcfg, SDHCFG);
+	writel(host->hcfg, host->ioaddr + SDHCFG);
 
 	data->bytes_xfered = data->error ? 0 : (data->blksz * data->blocks);
 
@@ -851,23 +773,24 @@ static void bcm2835_sdhost_finish_data(struct bcm2835_host *host)
 		 * command completed. Make sure we do
 		 * things in the proper order.
 		 */
-		pr_debug("Finished early - HSTS %x\n",
-			 bcm2835_sdhost_read(host, SDHSTS));
+		dev_dbg(&host->pdev->dev, "Finished early - HSTS %x\n",
+			readl(host->ioaddr + SDHSTS));
 	} else {
-		bcm2835_sdhost_transfer_complete(host);
+		bcm2835_transfer_complete(host);
 	}
 }
 
 /* If irq_flags is valid, the caller is in a thread context and is
  * allowed to sleep
  */
-static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
-					  unsigned long *irq_flags)
+static void bcm2835_finish_command(struct bcm2835_host *host,
+				   unsigned long *irq_flags)
 {
 	u32 sdcmd;
 	u32 retries;
 
-	pr_debug("finish_command(%x)\n", bcm2835_sdhost_read(host, SDCMD));
+	dev_dbg(&host->pdev->dev, "finish_command(%x)\n",
+		readl(host->ioaddr + SDCMD));
 
 	/* Poll quickly at first */
 
@@ -887,7 +810,7 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 
 			for (i = 0; i < retries; i++) {
 				cpu_relax();
-				sdcmd = bcm2835_sdhost_read(host, SDCMD);
+				sdcmd = readl(host->ioaddr + SDCMD);
 			}
 
 			do_gettimeofday(&now);
@@ -901,11 +824,11 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 	}
 
 	retries = host->cmd_quick_poll_retries;
-	for (sdcmd = bcm2835_sdhost_read(host, SDCMD);
+	for (sdcmd = readl(host->ioaddr + SDCMD);
 	     (sdcmd & SDCMD_NEW_FLAG) && !(sdcmd & SDCMD_FAIL_FLAG) && retries;
 	     retries--) {
 		cpu_relax();
-		sdcmd = bcm2835_sdhost_read(host, SDCMD);
+		sdcmd = readl(host->ioaddr + SDCMD);
 	}
 
 	if (!retries) {
@@ -923,7 +846,7 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 			spin_unlock_irqrestore(&host->lock, *irq_flags);
 			usleep_range(1, 10);
 			spin_lock_irqsave(&host->lock, *irq_flags);
-			sdcmd = bcm2835_sdhost_read(host, SDCMD);
+			sdcmd = readl(host->ioaddr + SDCMD);
 			if (!(sdcmd & SDCMD_NEW_FLAG) ||
 			    (sdcmd & SDCMD_FAIL_FLAG))
 				break;
@@ -932,27 +855,26 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 
 	/* Check for errors */
 	if (sdcmd & SDCMD_NEW_FLAG) {
-		pr_err("%s: command never completed.\n",
-		       mmc_hostname(host->mmc));
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev, "command never completed.\n");
+		bcm2835_dumpregs(host);
 		host->cmd->error = -EIO;
 		tasklet_schedule(&host->finish_tasklet);
 		return;
 	} else if (sdcmd & SDCMD_FAIL_FLAG) {
-		u32 sdhsts = bcm2835_sdhost_read(host, SDHSTS);
+		u32 sdhsts = readl(host->ioaddr + SDHSTS);
 
 		/* Clear the errors */
-		bcm2835_sdhost_write(host, SDHSTS_ERROR_MASK, SDHSTS);
+		writel(SDHSTS_ERROR_MASK, host->ioaddr + SDHSTS);
 
 		if (!(sdhsts & SDHSTS_CRC7_ERROR) ||
 		    (host->cmd->opcode != 1)) {
 			if (sdhsts & SDHSTS_CMD_TIME_OUT) {
 				host->cmd->error = -ETIMEDOUT;
 			} else {
-				pr_err("%s: unexpected command %d error\n",
-				       mmc_hostname(host->mmc),
-				       host->cmd->opcode);
-				bcm2835_sdhost_dumpregs(host);
+				dev_err(&host->pdev->dev,
+					"unexpected command %d error\n",
+					host->cmd->opcode);
+				bcm2835_dumpregs(host);
 				host->cmd->error = -EILSEQ;
 			}
 			tasklet_schedule(&host->finish_tasklet);
@@ -966,34 +888,32 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 
 			for (i = 0; i < 4; i++) {
 				host->cmd->resp[3 - i] =
-					bcm2835_sdhost_read(host,
-							    SDRSP0 + i * 4);
+					readl(host->ioaddr + SDRSP0 + i * 4);
 			}
 
-			pr_debug("%s: finish_command %08x %08x %08x %08x\n",
-				 mmc_hostname(host->mmc),
-				 host->cmd->resp[0], host->cmd->resp[1],
-				 host->cmd->resp[2], host->cmd->resp[3]);
+			dev_dbg(&host->pdev->dev,
+				"finish_command %08x %08x %08x %08x\n",
+				host->cmd->resp[0], host->cmd->resp[1],
+				host->cmd->resp[2], host->cmd->resp[3]);
 		} else {
-			host->cmd->resp[0] = bcm2835_sdhost_read(host, SDRSP0);
-			pr_debug("%s: finish_command %08x\n",
-				 mmc_hostname(host->mmc),
-				 host->cmd->resp[0]);
+			host->cmd->resp[0] = readl(host->ioaddr + SDRSP0);
+			dev_dbg(&host->pdev->dev, "finish_command %08x\n",
+				host->cmd->resp[0]);
 		}
 	}
 
 	if (host->cmd == host->mrq->sbc) {
 		/* Finished CMD23, now send actual command. */
 		host->cmd = NULL;
-		if (bcm2835_sdhost_send_command(host, host->mrq->cmd)) {
+		if (bcm2835_send_command(host, host->mrq->cmd)) {
 			if (host->data && host->dma_desc)
 				/* DMA transfer starts now, PIO starts
 				 * after irq
 				 */
-				bcm2835_sdhost_start_dma(host);
+				bcm2835_start_dma(host);
 
 			if (!host->use_busy)
-				bcm2835_sdhost_finish_command(host, NULL);
+				bcm2835_finish_command(host, NULL);
 		}
 	} else if (host->cmd == host->mrq->stop) {
 		/* Finished CMD12 */
@@ -1004,11 +924,11 @@ static void bcm2835_sdhost_finish_command(struct bcm2835_host *host,
 		if (!host->data)
 			tasklet_schedule(&host->finish_tasklet);
 		else if (host->data_complete)
-			bcm2835_sdhost_transfer_complete(host);
+			bcm2835_transfer_complete(host);
 	}
 }
 
-static void bcm2835_sdhost_timeout(unsigned long data)
+static void bcm2835_timeout(unsigned long data)
 {
 	struct bcm2835_host *host;
 	unsigned long flags;
@@ -1018,48 +938,48 @@ static void bcm2835_sdhost_timeout(unsigned long data)
 	spin_lock_irqsave(&host->lock, flags);
 
 	if (host->mrq) {
-		pr_err("%s: timeout waiting for hardware interrupt.\n",
-		       mmc_hostname(host->mmc));
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev,
+			"timeout waiting for hardware interrupt.\n");
+		bcm2835_dumpregs(host);
 
 		if (host->data) {
 			host->data->error = -ETIMEDOUT;
-			bcm2835_sdhost_finish_data(host);
+			bcm2835_finish_data(host);
 		} else {
 			if (host->cmd)
 				host->cmd->error = -ETIMEDOUT;
 			else
 				host->mrq->cmd->error = -ETIMEDOUT;
 
-			pr_debug("timeout_timer tasklet_schedule\n");
+			dev_dbg(&host->pdev->dev, "timeout_timer tasklet_schedule\n");
 			tasklet_schedule(&host->finish_tasklet);
 		}
 	}
-
-	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void bcm2835_sdhost_busy_irq(struct bcm2835_host *host, u32 intmask)
+static void bcm2835_busy_irq(struct bcm2835_host *host, u32 intmask)
 {
 	if (!host->cmd) {
-		pr_err("%s: got command busy interrupt 0x%08x even though no command operation was in progress.\n",
-		       mmc_hostname(host->mmc), (unsigned)intmask);
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev,
+			"got command busy interrupt 0x%08x even though no command operation was in progress.\n",
+			(unsigned int)intmask);
+		bcm2835_dumpregs(host);
 		return;
 	}
 
 	if (!host->use_busy) {
-		pr_err("%s: got command busy interrupt 0x%08x even though not expecting one.\n",
-		       mmc_hostname(host->mmc), (unsigned)intmask);
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev,
+			"got command busy interrupt 0x%08x even though not expecting one.\n",
+			(unsigned int)intmask);
+		bcm2835_dumpregs(host);
 		return;
 	}
 	host->use_busy = false;
 
 	if (intmask & SDHSTS_ERROR_MASK) {
-		pr_err("sdhost_busy_irq: intmask %x, data %p\n",
-		       intmask, host->mrq->data);
+		dev_err(&host->pdev->dev, "sdhost_busy_irq: intmask %x, data %p\n",
+			intmask, host->mrq->data);
 		if (intmask & SDHSTS_CRC7_ERROR) {
 			host->cmd->error = -EILSEQ;
 		} else if (intmask & (SDHSTS_CRC16_ERROR |
@@ -1077,13 +997,13 @@ static void bcm2835_sdhost_busy_irq(struct bcm2835_host *host, u32 intmask)
 			host->cmd->error = -ETIMEDOUT;
 		}
 
-		bcm2835_sdhost_dumpregs(host);
+		bcm2835_dumpregs(host);
 	} else {
-		bcm2835_sdhost_finish_command(host, NULL);
+		bcm2835_finish_command(host, NULL);
 	}
 }
 
-static void bcm2835_sdhost_data_irq(struct bcm2835_host *host, u32 intmask)
+static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
 {
 	/* There are no dedicated data/space available interrupt
 	 * status bits, so it is necessary to use the single shared
@@ -1105,27 +1025,28 @@ static void bcm2835_sdhost_data_irq(struct bcm2835_host *host, u32 intmask)
 	}
 
 	if (host->data->error) {
-		bcm2835_sdhost_finish_data(host);
+		bcm2835_finish_data(host);
 	} else if (host->data->flags & MMC_DATA_WRITE) {
 		/* Use the block interrupt for writes after the first block */
 		host->hcfg &= ~(SDHCFG_DATA_IRPT_EN);
 		host->hcfg |= SDHCFG_BLOCK_IRPT_EN;
-		bcm2835_sdhost_write(host, host->hcfg, SDHCFG);
-		bcm2835_sdhost_transfer_pio(host);
+		writel(host->hcfg, host->ioaddr + SDHCFG);
+		bcm2835_transfer_pio(host);
 	} else {
-		bcm2835_sdhost_transfer_pio(host);
+		bcm2835_transfer_pio(host);
 		host->blocks--;
 		if ((host->blocks == 0) || host->data->error)
-			bcm2835_sdhost_finish_data(host);
+			bcm2835_finish_data(host);
 	}
 }
 
-static void bcm2835_sdhost_block_irq(struct bcm2835_host *host, u32 intmask)
+static void bcm2835_block_irq(struct bcm2835_host *host, u32 intmask)
 {
 	if (!host->data) {
-		pr_err("%s: got block interrupt 0x%08x even though no data operation was in progress.\n",
-		       mmc_hostname(host->mmc), (unsigned)intmask);
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev,
+			"got block interrupt 0x%08x even though no data operation was in progress.\n",
+			(unsigned int)intmask);
+		bcm2835_dumpregs(host);
 		return;
 	}
 
@@ -1142,15 +1063,15 @@ static void bcm2835_sdhost_block_irq(struct bcm2835_host *host, u32 intmask)
 	if (!host->dma_desc) {
 		WARN_ON(!host->blocks);
 		if (host->data->error || (--host->blocks == 0))
-			bcm2835_sdhost_finish_data(host);
+			bcm2835_finish_data(host);
 		else
-			bcm2835_sdhost_transfer_pio(host);
+			bcm2835_transfer_pio(host);
 	} else if (host->data->flags & MMC_DATA_WRITE) {
-		bcm2835_sdhost_finish_data(host);
+		bcm2835_finish_data(host);
 	}
 }
 
-static irqreturn_t bcm2835_sdhost_irq(int irq, void *dev_id)
+static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 {
 	irqreturn_t result = IRQ_NONE;
 	struct bcm2835_host *host = dev_id;
@@ -1158,22 +1079,21 @@ static irqreturn_t bcm2835_sdhost_irq(int irq, void *dev_id)
 
 	spin_lock(&host->lock);
 
-	intmask = bcm2835_sdhost_read(host, SDHSTS);
+	intmask = readl(host->ioaddr + SDHSTS);
 
-	bcm2835_sdhost_write(host,
-			     SDHSTS_BUSY_IRPT |
-			     SDHSTS_BLOCK_IRPT |
-			     SDHSTS_SDIO_IRPT |
-			     SDHSTS_DATA_FLAG,
-			     SDHSTS);
+	writel(SDHSTS_BUSY_IRPT |
+	       SDHSTS_BLOCK_IRPT |
+	       SDHSTS_SDIO_IRPT |
+	       SDHSTS_DATA_FLAG,
+	       host->ioaddr + SDHSTS);
 
 	if (intmask & SDHSTS_BLOCK_IRPT) {
-		bcm2835_sdhost_block_irq(host, intmask);
+		bcm2835_block_irq(host, intmask);
 		result = IRQ_HANDLED;
 	}
 
 	if (intmask & SDHSTS_BUSY_IRPT) {
-		bcm2835_sdhost_busy_irq(host, intmask);
+		bcm2835_busy_irq(host, intmask);
 		result = IRQ_HANDLED;
 	}
 
@@ -1183,18 +1103,16 @@ static irqreturn_t bcm2835_sdhost_irq(int irq, void *dev_id)
 	 */
 	if ((intmask & SDHSTS_DATA_FLAG) &&
 	    (host->hcfg & SDHCFG_DATA_IRPT_EN)) {
-		bcm2835_sdhost_data_irq(host, intmask);
+		bcm2835_data_irq(host, intmask);
 		result = IRQ_HANDLED;
 	}
-
-	mmiowb();
 
 	spin_unlock(&host->lock);
 
 	return result;
 }
 
-void bcm2835_sdhost_set_clock(struct bcm2835_host *host, unsigned int clock)
+void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock)
 {
 	int div = 0; /* Initialized for compiler warning */
 
@@ -1226,7 +1144,7 @@ void bcm2835_sdhost_set_clock(struct bcm2835_host *host, unsigned int clock)
 		 * to show willing
 		 */
 		host->cdiv = SDCDIV_MAX_CDIV;
-		bcm2835_sdhost_write(host, host->cdiv, SDCDIV);
+		writel(host->cdiv, host->ioaddr + SDCDIV);
 		return;
 	}
 
@@ -1249,14 +1167,14 @@ void bcm2835_sdhost_set_clock(struct bcm2835_host *host, unsigned int clock)
 		((host->mmc->caps & MMC_CAP_4_BIT_DATA) ? 8 : 32);
 
 	host->cdiv = div;
-	bcm2835_sdhost_write(host, host->cdiv, SDCDIV);
+	writel(host->cdiv, host->ioaddr + SDCDIV);
 
 	/* Set the timeout to 500ms */
-	bcm2835_sdhost_write(host, host->mmc->actual_clock / 2, SDTOUT);
+	writel(host->mmc->actual_clock / 2, host->ioaddr + SDTOUT);
 }
 
-static void bcm2835_sdhost_request(struct mmc_host *mmc,
-				   struct mmc_request *mrq)
+static void bcm2835_request(struct mmc_host *mmc,
+			    struct mmc_request *mrq)
 {
 	struct bcm2835_host *host;
 	unsigned long flags;
@@ -1275,8 +1193,8 @@ static void bcm2835_sdhost_request(struct mmc_host *mmc,
 		mrq->stop->error = 0;
 
 	if (mrq->data && !is_power_of_2(mrq->data->blksz)) {
-		pr_err("%s: unsupported block size (%d bytes)\n",
-		       mmc_hostname(mmc), mrq->data->blksz);
+		dev_err(&host->pdev->dev, "unsupported block size (%d bytes)\n",
+			mrq->data->blksz);
 		mrq->cmd->error = -EINVAL;
 		mmc_request_done(mmc, mrq);
 		return;
@@ -1284,52 +1202,49 @@ static void bcm2835_sdhost_request(struct mmc_host *mmc,
 
 	if (host->use_dma && mrq->data &&
 	    (mrq->data->blocks > host->pio_limit))
-		bcm2835_sdhost_prepare_dma(host, mrq->data);
+		bcm2835_prepare_dma(host, mrq->data);
 
 	spin_lock_irqsave(&host->lock, flags);
 
 	WARN_ON(host->mrq);
 	host->mrq = mrq;
 
-	edm = bcm2835_sdhost_read(host, SDEDM);
+	edm = readl(host->ioaddr + SDEDM);
 	fsm = edm & SDEDM_FSM_MASK;
 
 	if ((fsm != SDEDM_FSM_IDENTMODE) &&
 	    (fsm != SDEDM_FSM_DATAMODE)) {
-		pr_err("%s: previous command (%d) not complete (EDM %x)\n",
-		       mmc_hostname(host->mmc),
-		       bcm2835_sdhost_read(host, SDCMD) & SDCMD_CMD_MASK,
-		       edm);
-		bcm2835_sdhost_dumpregs(host);
+		dev_err(&host->pdev->dev,
+			"previous command (%d) not complete (EDM %x)\n",
+			readl(host->ioaddr + SDCMD) & SDCMD_CMD_MASK,
+			edm);
+		bcm2835_dumpregs(host);
 		mrq->cmd->error = -EILSEQ;
 		tasklet_schedule(&host->finish_tasklet);
-		mmiowb();
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
 	}
 
 	host->use_sbc = !!mrq->sbc && (host->mrq->data->flags & MMC_DATA_READ);
 	if (host->use_sbc) {
-		if (bcm2835_sdhost_send_command(host, mrq->sbc)) {
+		if (bcm2835_send_command(host, mrq->sbc)) {
 			if (!host->use_busy)
-				bcm2835_sdhost_finish_command(host, &flags);
+				bcm2835_finish_command(host, &flags);
 		}
-	} else if (bcm2835_sdhost_send_command(host, mrq->cmd)) {
+	} else if (bcm2835_send_command(host, mrq->cmd)) {
 		if (host->data && host->dma_desc) {
 			/* DMA transfer starts now, PIO starts after irq */
-			bcm2835_sdhost_start_dma(host);
+			bcm2835_start_dma(host);
 		}
 
 		if (!host->use_busy)
-			bcm2835_sdhost_finish_command(host, &flags);
+			bcm2835_finish_command(host, &flags);
 	}
-
-	mmiowb();
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+static void bcm2835_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct bcm2835_host *host = mmc_priv(mmc);
 	unsigned long flags;
@@ -1337,7 +1252,7 @@ static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	spin_lock_irqsave(&host->lock, flags);
 
 	if (!ios->clock || ios->clock != host->clock) {
-		bcm2835_sdhost_set_clock(host, ios->clock);
+		bcm2835_set_clock(host, ios->clock);
 		host->clock = ios->clock;
 	}
 
@@ -1351,20 +1266,18 @@ static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	/* Disable clever clock switching, to cope with fast core clocks */
 	host->hcfg |= SDHCFG_SLOW_CARD;
 
-	bcm2835_sdhost_write(host, host->hcfg, SDHCFG);
-
-	mmiowb();
+	writel(host->hcfg, host->ioaddr + SDHCFG);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static struct mmc_host_ops bcm2835_sdhost_ops = {
-	.request = bcm2835_sdhost_request,
-	.set_ios = bcm2835_sdhost_set_ios,
-	.hw_reset = bcm2835_sdhost_reset,
+static struct mmc_host_ops bcm2835_ops = {
+	.request = bcm2835_request,
+	.set_ios = bcm2835_set_ios,
+	.hw_reset = bcm2835_reset,
 };
 
-static void bcm2835_sdhost_cmd_wait_work(struct work_struct *work)
+static void bcm2835_cmd_wait_work(struct work_struct *work)
 {
 	struct bcm2835_host *host;
 	unsigned long flags;
@@ -1381,14 +1294,12 @@ static void bcm2835_sdhost_cmd_wait_work(struct work_struct *work)
 		return;
 	}
 
-	bcm2835_sdhost_finish_command(host, &flags);
-
-	mmiowb();
+	bcm2835_finish_command(host, &flags);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void bcm2835_sdhost_tasklet_finish(unsigned long param)
+static void bcm2835_tasklet_finish(unsigned long param)
 {
 	struct bcm2835_host *host;
 	unsigned long flags;
@@ -1415,8 +1326,6 @@ static void bcm2835_sdhost_tasklet_finish(unsigned long param)
 	host->cmd = NULL;
 	host->data = NULL;
 
-	mmiowb();
-
 	host->dma_desc = NULL;
 	terminate_chan = host->dma_chan;
 	host->dma_chan = NULL;
@@ -1427,14 +1336,30 @@ static void bcm2835_sdhost_tasklet_finish(unsigned long param)
 		int err = dmaengine_terminate_all(terminate_chan);
 
 		if (err)
-			pr_err("%s: failed to terminate DMA (%d)\n",
-			       mmc_hostname(host->mmc), err);
+			dev_err(&host->pdev->dev,
+				"failed to terminate DMA (%d)\n", err);
 	}
 
 	mmc_request_done(host->mmc, mrq);
 }
 
-int bcm2835_sdhost_add_host(struct bcm2835_host *host)
+static void bcm2835_init(struct bcm2835_host *host, int soft)
+{
+	dev_dbg(&host->pdev->dev, "bcm2835_init(%d)\n", soft);
+
+	/* Set interrupt enables */
+	host->hcfg = SDHCFG_BUSY_IRPT_EN;
+
+	bcm2835_reset_internal(host);
+
+	if (soft) {
+		/* force clock reconfiguration */
+		host->clock = 0;
+		bcm2835_set_ios(host->mmc, &host->mmc->ios);
+	}
+}
+
+int bcm2835_add_host(struct bcm2835_host *host)
 {
 	struct mmc_host *mmc;
 	struct dma_slave_config cfg;
@@ -1443,15 +1368,15 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 
 	mmc = host->mmc;
 
-	bcm2835_sdhost_reset_internal(host);
+	bcm2835_reset_internal(host);
 
 	mmc->f_max = host->max_clk;
 	mmc->f_min = host->max_clk / SDCDIV_MAX_CDIV;
 
 	mmc->max_busy_timeout = ~0 / (mmc->f_max / 1000);
 
-	pr_debug("f_max %d, f_min %d, max_busy_timeout %d\n",
-		 mmc->f_max, mmc->f_min, mmc->max_busy_timeout);
+	dev_dbg(&host->pdev->dev, "f_max %d, f_min %d, max_busy_timeout %d\n",
+		mmc->f_max, mmc->f_min, mmc->max_busy_timeout);
 
 	/* host controller capabilities */
 	mmc->caps |=
@@ -1463,8 +1388,8 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 
 	if (IS_ERR_OR_NULL(host->dma_chan_tx) ||
 	    IS_ERR_OR_NULL(host->dma_chan_rx)) {
-		pr_err("%s: unable to initialise DMA channels. Falling back to PIO\n",
-		       mmc_hostname(mmc));
+		dev_err(&host->pdev->dev,
+			"unable to initialise DMA channels. Falling back to PIO\n");
 		host->use_dma = false;
 	} else {
 		host->use_dma = true;
@@ -1498,33 +1423,31 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
 	tasklet_init(&host->finish_tasklet,
-		     bcm2835_sdhost_tasklet_finish, (unsigned long)host);
+		     bcm2835_tasklet_finish, (unsigned long)host);
 
-	INIT_WORK(&host->cmd_wait_wq, bcm2835_sdhost_cmd_wait_work);
+	INIT_WORK(&host->cmd_wait_wq, bcm2835_cmd_wait_work);
 
-	setup_timer(&host->timer, bcm2835_sdhost_timeout,
+	setup_timer(&host->timer, bcm2835_timeout,
 		    (unsigned long)host);
 
-	bcm2835_sdhost_init(host, 0);
+	bcm2835_init(host, 0);
 
-	ret = request_irq(host->irq, bcm2835_sdhost_irq, 0 /*IRQF_SHARED*/,
+	ret = request_irq(host->irq, bcm2835_irq, 0 /*IRQF_SHARED*/,
 			  mmc_hostname(mmc), host);
 	if (ret) {
-		pr_err("%s: failed to request IRQ %d: %d\n",
-		       mmc_hostname(mmc), host->irq, ret);
+		dev_err(&host->pdev->dev, "failed to request IRQ %d: %d\n",
+			host->irq, ret);
 		goto untasklet;
 	}
 
-	mmiowb();
 	mmc_add_host(mmc);
 
 	pio_limit_string[0] = '\0';
 	if (host->use_dma && (host->pio_limit > 0))
 		sprintf(pio_limit_string, " (>%d)", host->pio_limit);
-	pr_info("%s: loaded - DMA %s%s\n",
-		mmc_hostname(mmc),
-		host->use_dma ? "enabled" : "disabled",
-		pio_limit_string);
+	dev_info(&host->pdev->dev, "loaded - DMA %s%s\n",
+		 host->use_dma ? "enabled" : "disabled",
+		 pio_limit_string);
 
 	return 0;
 
@@ -1534,7 +1457,7 @@ untasklet:
 	return ret;
 }
 
-static int bcm2835_sdhost_probe(struct platform_device *pdev)
+static int bcm2835_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct clk *clk;
@@ -1543,14 +1466,15 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	struct mmc_host *mmc;
 	int ret;
 
-	pr_debug("bcm2835_sdhost_probe\n");
+	dev_dbg(dev, "bcm2835_probe\n");
 	mmc = mmc_alloc_host(sizeof(*host), dev);
 	if (!mmc)
 		return -ENOMEM;
 
-	mmc->ops = &bcm2835_sdhost_ops;
+	mmc->ops = &bcm2835_ops;
 	host = mmc_priv(mmc);
 	host->mmc = mmc;
+	host->pdev = pdev;
 	host->cmd_quick_poll_retries = 0;
 	host->pio_timeout = msecs_to_jiffies(500);
 	host->pio_limit = 1;
@@ -1570,10 +1494,10 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	host->phys_addr = be32_to_cpup(of_get_address(pdev->dev.of_node, 0,
 						      NULL, NULL));
 
-	pr_debug(" - ioaddr %lx, iomem->start %lx, phys_addr %lx\n",
-		 (unsigned long)host->ioaddr,
-		 (unsigned long)iomem->start,
-		 (unsigned long)host->phys_addr);
+	dev_dbg(dev, " - ioaddr %lx, iomem->start %lx, phys_addr %lx\n",
+		(unsigned long)host->ioaddr,
+		(unsigned long)iomem->start,
+		(unsigned long)host->phys_addr);
 
 	host->dma_chan = NULL;
 	host->dma_desc = NULL;
@@ -1598,38 +1522,38 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	pr_debug(" - max_clk %lx, irq %d\n",
-		 (unsigned long)host->max_clk,
-		 (int)host->irq);
+	dev_dbg(dev, " - max_clk %lx, irq %d\n",
+		(unsigned long)host->max_clk,
+		(int)host->irq);
 
 	mmc_of_parse(mmc);
 
-	ret = bcm2835_sdhost_add_host(host);
+	ret = bcm2835_add_host(host);
 	if (ret)
 		goto err;
 
 	platform_set_drvdata(pdev, host);
 
-	pr_debug("bcm2835_sdhost_probe -> OK\n");
+	dev_dbg(dev, "bcm2835_probe -> OK\n");
 
 	return 0;
 
 err:
-	pr_debug("bcm2835_sdhost_probe -> err %d\n", ret);
+	dev_dbg(dev, "bcm2835_probe -> err %d\n", ret);
 	mmc_free_host(mmc);
 
 	return ret;
 }
 
-static int bcm2835_sdhost_remove(struct platform_device *pdev)
+static int bcm2835_remove(struct platform_device *pdev)
 {
 	struct bcm2835_host *host = platform_get_drvdata(pdev);
 
-	pr_debug("bcm2835_sdhost_remove\n");
+	dev_dbg(&pdev->dev, "bcm2835_remove\n");
 
 	mmc_remove_host(host->mmc);
 
-	bcm2835_sdhost_set_power(host, false);
+	bcm2835_set_power(host, false);
 
 	free_irq(host->irq, host);
 
@@ -1640,25 +1564,25 @@ static int bcm2835_sdhost_remove(struct platform_device *pdev)
 	mmc_free_host(host->mmc);
 	platform_set_drvdata(pdev, NULL);
 
-	pr_debug("bcm2835_sdhost_remove - OK\n");
+	dev_dbg(&pdev->dev, "bcm2835_remove - OK\n");
 	return 0;
 }
 
-static const struct of_device_id bcm2835_sdhost_match[] = {
+static const struct of_device_id bcm2835_match[] = {
 	{ .compatible = "brcm,bcm2835-sdhost" },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, bcm2835_sdhost_match);
+MODULE_DEVICE_TABLE(of, bcm2835_match);
 
-static struct platform_driver bcm2835_sdhost_driver = {
-	.probe      = bcm2835_sdhost_probe,
-	.remove     = bcm2835_sdhost_remove,
+static struct platform_driver bcm2835_driver = {
+	.probe      = bcm2835_probe,
+	.remove     = bcm2835_remove,
 	.driver     = {
 		.name		= "sdhost-bcm2835",
-		.of_match_table	= bcm2835_sdhost_match,
+		.of_match_table	= bcm2835_match,
 	},
 };
-module_platform_driver(bcm2835_sdhost_driver);
+module_platform_driver(bcm2835_driver);
 
 MODULE_ALIAS("platform:sdhost-bcm2835");
 MODULE_DESCRIPTION("BCM2835 SDHost driver");

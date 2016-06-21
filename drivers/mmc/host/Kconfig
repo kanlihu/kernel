@@ -790,7 +790,7 @@ config MMC_TOSHIBA_PCI
 	depends on PCI
 	help
 
-config MMC_BCM2835_SDHOST
+config MMC_BCM2835
 	tristate "platform support for the BCM2835 SDHOST MMC Controller"
 	depends on ARCH_BCM2835 || COMPILE_TEST
 	help
