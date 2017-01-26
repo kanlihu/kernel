@@ -168,6 +168,9 @@ struct bcm2835_host {
 	bool			use_busy:1;	/* Wait for busy interrupt */
 	bool			use_sbc:1;	/* Send CMD23 */
 
+	/* for threaded irq handler */
+	bool                    irq_block;
+
 	/* DMA part */
 	struct dma_chan		*dma_chan_rx;
 	struct dma_chan		*dma_chan_tx;
@@ -1035,17 +1038,12 @@ static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
 	}
 }
 
-static void bcm2835_block_irq(struct bcm2835_host *host, u32 intmask)
+static void bcm2835_block_irq(struct bcm2835_host *host)
 {
-	if (!host->data) {
-		dev_err(&host->pdev->dev,
-			"got block interrupt 0x%08x even though no data operation was in progress.\n",
-			(unsigned int)intmask);
+	if (WARN_ON(!host->data)) {
 		bcm2835_dumpregs(host);
 		return;
 	}
-
-	bcm2835_check_data_error(host, intmask);
 
 	if (!host->dma_desc) {
 		WARN_ON(!host->blocks);
@@ -1075,8 +1073,9 @@ static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 	       host->ioaddr + SDHSTS);
 
 	if (intmask & SDHSTS_BLOCK_IRPT) {
-		bcm2835_block_irq(host, intmask);
-		result = IRQ_HANDLED;
+		bcm2835_check_data_error(host, intmask);
+		host->irq_block = true;
+		result = IRQ_WAKE_THREAD;
 	}
 
 	if (intmask & SDHSTS_BUSY_IRPT) {
@@ -1101,6 +1100,20 @@ static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 
 static irqreturn_t bcm2835_threaded_irq(int irq, void *dev_id)
 {
+	struct bcm2835_host *host = dev_id;
+	unsigned long flags;
+	bool block;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	block = host->irq_block;
+	host->irq_block = false;
+
+	if (block)
+		bcm2835_block_irq(host);
+
+	spin_unlock_irqrestore(&host->lock, flags);
+
 	return IRQ_HANDLED;
 }
 
