@@ -1105,6 +1105,11 @@ static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 	return result;
 }
 
+static irqreturn_t bcm2835_threaded_irq(int irq, void *dev_id)
+{
+	return IRQ_HANDLED;
+}
+
 void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock)
 {
 	int div = 0; /* Initialized for compiler warning */
@@ -1405,8 +1410,9 @@ int bcm2835_add_host(struct bcm2835_host *host)
 
 	bcm2835_reset_internal(host);
 
-	ret = request_irq(host->irq, bcm2835_irq, 0 /*IRQF_SHARED*/,
-			  mmc_hostname(mmc), host);
+	ret = request_threaded_irq(host->irq, bcm2835_irq,
+				   bcm2835_threaded_irq,
+				   0, mmc_hostname(mmc), host);
 	if (ret) {
 		dev_err(dev, "failed to request IRQ %d: %d\n",
 			host->irq, ret);
