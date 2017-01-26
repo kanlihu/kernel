@@ -171,6 +171,7 @@ struct bcm2835_host {
 	/* for threaded irq handler */
 	bool                    irq_block;
 	bool                    irq_busy;
+	bool                    irq_data;
 
 	/* DMA part */
 	struct dma_chan		*dma_chan_rx;
@@ -1025,10 +1026,10 @@ static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
 		return;
 
 	bcm2835_check_data_error(host, intmask);
+	if (host->data->error)
+		goto finished;
 
-	if (host->data->error) {
-		bcm2835_finish_data(host);
-	} else if (host->data->flags & MMC_DATA_WRITE) {
+	if (host->data->flags & MMC_DATA_WRITE) {
 		/* Use the block interrupt for writes after the first block */
 		host->hcfg &= ~(SDHCFG_DATA_IRPT_EN);
 		host->hcfg |= SDHCFG_BLOCK_IRPT_EN;
@@ -1038,8 +1039,22 @@ static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
 		bcm2835_transfer_pio(host);
 		host->blocks--;
 		if ((host->blocks == 0) || host->data->error)
-			bcm2835_finish_data(host);
+			goto finished;
 	}
+	return;
+
+finished:
+	host->hcfg &= ~(SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN);
+	writel(host->hcfg, host->ioaddr + SDHCFG);
+	return;
+}
+
+static void bcm2835_data_threaded_irq(struct bcm2835_host *host)
+{
+	if (!host->data)
+		return;
+	if ((host->blocks == 0) || host->data->error)
+		bcm2835_finish_data(host);
 }
 
 static void bcm2835_block_irq(struct bcm2835_host *host)
@@ -1098,7 +1113,8 @@ static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 	if ((intmask & SDHSTS_DATA_FLAG) &&
 	    (host->hcfg & SDHCFG_DATA_IRPT_EN)) {
 		bcm2835_data_irq(host, intmask);
-		result = IRQ_HANDLED;
+		host->irq_data = true;
+		result = IRQ_WAKE_THREAD;
 	}
 
 	spin_unlock(&host->lock);
@@ -1110,19 +1126,23 @@ static irqreturn_t bcm2835_threaded_irq(int irq, void *dev_id)
 {
 	struct bcm2835_host *host = dev_id;
 	unsigned long flags;
-	bool block, busy;
+	bool block, busy, data;
 
 	spin_lock_irqsave(&host->lock, flags);
 
 	block = host->irq_block;
 	busy  = host->irq_busy;
+	data  = host->irq_data;
 	host->irq_block = false;
 	host->irq_busy  = false;
+	host->irq_data  = false;
 
 	if (block)
 		bcm2835_block_irq(host);
 	if (busy)
 		bcm2835_busy_irq(host);
+	if (data)
+		bcm2835_data_threaded_irq(host);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 
