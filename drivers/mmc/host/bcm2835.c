@@ -170,6 +170,7 @@ struct bcm2835_host {
 
 	/* for threaded irq handler */
 	bool                    irq_block;
+	bool                    irq_busy;
 
 	/* DMA part */
 	struct dma_chan		*dma_chan_rx;
@@ -996,27 +997,18 @@ static void bcm2835_check_data_error(struct bcm2835_host *host, u32 intmask)
 		host->data->error = -ETIMEDOUT;
 }
 
-static void bcm2835_busy_irq(struct bcm2835_host *host, u32 intmask)
+static void bcm2835_busy_irq(struct bcm2835_host *host)
 {
-	struct device *dev = &host->pdev->dev;
-
-	if (!host->cmd) {
-		dev_err(dev, "got command busy interrupt 0x%08x even though no command operation was in progress.\n",
-			(unsigned int)intmask);
+	if (WARN_ON(!host->cmd)) {
 		bcm2835_dumpregs(host);
 		return;
 	}
 
-	if (!host->use_busy) {
-		dev_err(dev, "got command busy interrupt 0x%08x even though not expecting one.\n",
-			(unsigned int)intmask);
+	if (WARN_ON(!host->use_busy)) {
 		bcm2835_dumpregs(host);
 		return;
 	}
 	host->use_busy = false;
-
-	if (bcm2835_check_cmd_error(host, intmask))
-		return;
 
 	bcm2835_finish_command(host, NULL);
 }
@@ -1091,8 +1083,12 @@ static irqreturn_t bcm2835_irq(int irq, void *dev_id)
 	}
 
 	if (intmask & SDHSTS_BUSY_IRPT) {
-		bcm2835_busy_irq(host, intmask);
-		result = IRQ_HANDLED;
+		if (!bcm2835_check_cmd_error(host, intmask)) {
+			host->irq_busy = true;
+			result = IRQ_WAKE_THREAD;
+		} else {
+			result = IRQ_HANDLED;
+		}
 	}
 
 	/* There is no true data interrupt status bit, so it is
@@ -1114,15 +1110,19 @@ static irqreturn_t bcm2835_threaded_irq(int irq, void *dev_id)
 {
 	struct bcm2835_host *host = dev_id;
 	unsigned long flags;
-	bool block;
+	bool block, busy;
 
 	spin_lock_irqsave(&host->lock, flags);
 
 	block = host->irq_block;
+	busy  = host->irq_busy;
 	host->irq_block = false;
+	host->irq_busy  = false;
 
 	if (block)
 		bcm2835_block_irq(host);
+	if (busy)
+		bcm2835_busy_irq(host);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 
