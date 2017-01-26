@@ -609,6 +609,36 @@ static void bcm2835_prepare_data(struct bcm2835_host *host,
 	writel(data->blocks, host->ioaddr + SDHBLC);
 }
 
+static u32 bcm2835_read_wait_sdcmd(struct bcm2835_host *host, u32 timeout,
+				   bool check_fail)
+{
+	struct device *dev = &host->pdev->dev;
+	unsigned long start = jiffies;
+	unsigned long fastpoll = start + usecs_to_jiffies(10);
+	unsigned long end = start + msecs_to_jiffies(timeout);
+	u32 value;
+
+	for (;;) {
+		value = readl(host->ioaddr + SDCMD);
+		if (!(value & SDCMD_NEW_FLAG))
+			break;
+		if (check_fail && (value & SDCMD_FAIL_FLAG))
+			break;
+		if (time_after(jiffies, end)) {
+			dev_err(dev, "%s: timeout (%d us)\n",
+				__func__, timeout);
+			break;
+		}
+
+		/* if it takes longer reduce poll interval */
+		if (time_after(jiffies, fastpoll))
+			udelay(10);
+		else
+			cpu_relax();
+	}
+	return value;
+}
+
 bool bcm2835_send_command(struct bcm2835_host *host,
 			  struct mmc_command *cmd)
 {
