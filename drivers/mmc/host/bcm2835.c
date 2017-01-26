@@ -147,7 +147,6 @@ struct bcm2835_host {
 	u32			pio_timeout;	/* In jiffies */
 	int			clock;		/* Current clock speed */
 	unsigned int		max_clk;	/* Max possible freq */
-	struct tasklet_struct	finish_tasklet;	/* Tasklet structures */
 	struct timer_list	timer;		/* Timer for timeouts */
 	struct sg_mapping_iter	sg_miter;	/* SG state for PIO */
 	unsigned int		blocks;		/* remaining PIO blocks */
@@ -274,11 +273,12 @@ static void bcm2835_reset(struct mmc_host *mmc)
 
 	if (host->dma_chan)
 		dmaengine_terminate_sync(host->dma_chan);
-	tasklet_kill(&host->finish_tasklet);
 	bcm2835_reset_internal(host);
 }
 
+static void bcm2835_finish_data(struct bcm2835_host *host);
 static void bcm2835_finish_command(struct bcm2835_host *host);
+static void bcm2835_finish_request(struct bcm2835_host *host);
 
 static void bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 {
@@ -317,8 +317,6 @@ static void bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 		cpu_relax();
 	}
 }
-
-static void bcm2835_finish_data(struct bcm2835_host *host);
 
 static void bcm2835_dma_complete(void *param)
 {
@@ -667,7 +665,7 @@ bool bcm2835_send_command(struct bcm2835_host *host,
 		dev_err(dev, "previous command never completed.\n");
 		bcm2835_dumpregs(host);
 		cmd->error = -EILSEQ;
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 		return false;
 	}
 
@@ -688,7 +686,7 @@ bool bcm2835_send_command(struct bcm2835_host *host,
 	if ((cmd->flags & MMC_RSP_136) && (cmd->flags & MMC_RSP_BUSY)) {
 		dev_err(dev, "unsupported response type!\n");
 		cmd->error = -EINVAL;
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 		return false;
 	}
 
@@ -746,7 +744,7 @@ static void bcm2835_transfer_complete(struct bcm2835_host *host)
 		}
 	} else {
 		bcm2835_wait_transfer_complete(host);
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 	}
 }
 
@@ -847,7 +845,7 @@ static void bcm2835_finish_command(struct bcm2835_host *host)
 		dev_err(dev, "command never completed.\n");
 		bcm2835_dumpregs(host);
 		host->cmd->error = -EIO;
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 		return;
 	} else if (sdcmd & SDCMD_FAIL_FLAG) {
 		u32 sdhsts = readl(host->ioaddr + SDHSTS);
@@ -865,7 +863,7 @@ static void bcm2835_finish_command(struct bcm2835_host *host)
 				bcm2835_dumpregs(host);
 				host->cmd->error = -EILSEQ;
 			}
-			tasklet_schedule(&host->finish_tasklet);
+			bcm2835_finish_request(host);
 			return;
 		}
 	}
@@ -903,12 +901,12 @@ static void bcm2835_finish_command(struct bcm2835_host *host)
 		}
 	} else if (cmd == host->mrq->stop) {
 		/* Finished CMD12 */
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 	} else {
 		/* Processed actual command. */
 		host->cmd = NULL;
 		if (!host->data)
-			tasklet_schedule(&host->finish_tasklet);
+			bcm2835_finish_request(host);
 		else if (host->data_complete)
 			bcm2835_transfer_complete(host);
 	}
@@ -935,7 +933,7 @@ static void bcm2835_timeout(unsigned long data)
 				host->mrq->cmd->error = -ETIMEDOUT;
 
 			dev_dbg(dev, "timeout_timer tasklet_schedule\n");
-			tasklet_schedule(&host->finish_tasklet);
+			bcm2835_finish_request(host);
 		}
 	}
 
@@ -1244,7 +1242,7 @@ static void bcm2835_request(struct mmc_host *mmc,
 			edm);
 		bcm2835_dumpregs(host);
 		mrq->cmd->error = -EILSEQ;
-		tasklet_schedule(&host->finish_tasklet);
+		bcm2835_finish_request(host);
 		mutex_unlock(&host->mutex);
 		return;
 	}
@@ -1300,21 +1298,10 @@ static struct mmc_host_ops bcm2835_ops = {
 	.hw_reset = bcm2835_reset,
 };
 
-static void bcm2835_tasklet_finish(unsigned long param)
+static void bcm2835_finish_request(struct bcm2835_host *host)
 {
-	struct bcm2835_host *host = (struct bcm2835_host *)param;
-	struct mmc_request *mrq;
 	struct dma_chan *terminate_chan = NULL;
-
-	mutex_lock(&host->mutex);
-
-	/* If this tasklet gets rescheduled while running, it will
-	 * be run again afterwards but without any active request.
-	 */
-	if (!host->mrq) {
-		mutex_unlock(&host->mutex);
-		return;
-	}
+	struct mmc_request *mrq;
 
 	del_timer(&host->timer);
 
@@ -1327,8 +1314,6 @@ static void bcm2835_tasklet_finish(unsigned long param)
 	host->dma_desc = NULL;
 	terminate_chan = host->dma_chan;
 	host->dma_chan = NULL;
-
-	mutex_unlock(&host->mutex);
 
 	if (terminate_chan) {
 		int err = dmaengine_terminate_all(terminate_chan);
@@ -1402,9 +1387,6 @@ int bcm2835_add_host(struct bcm2835_host *host)
 	/* report supported voltage ranges */
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
-	tasklet_init(&host->finish_tasklet,
-		     bcm2835_tasklet_finish, (unsigned long)host);
-
 	setup_timer(&host->timer, bcm2835_timeout,
 		    (unsigned long)host);
 
@@ -1419,7 +1401,7 @@ int bcm2835_add_host(struct bcm2835_host *host)
 	if (ret) {
 		dev_err(dev, "failed to request IRQ %d: %d\n",
 			host->irq, ret);
-		goto untasklet;
+		return ret;
 	}
 
 	mmc_add_host(mmc);
@@ -1432,11 +1414,6 @@ int bcm2835_add_host(struct bcm2835_host *host)
 		 pio_limit_string);
 
 	return 0;
-
-untasklet:
-	tasklet_kill(&host->finish_tasklet);
-
-	return ret;
 }
 
 static int bcm2835_probe(struct platform_device *pdev)
@@ -1547,8 +1524,6 @@ static int bcm2835_remove(struct platform_device *pdev)
 	free_irq(host->irq, host);
 
 	del_timer_sync(&host->timer);
-
-	tasklet_kill(&host->finish_tasklet);
 
 	mmc_free_host(host->mmc);
 	platform_set_drvdata(pdev, NULL);
