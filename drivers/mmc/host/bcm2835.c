@@ -954,6 +954,38 @@ static void bcm2835_timeout(unsigned long data)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+static bool bcm2835_check_cmd_error(struct bcm2835_host *host, u32 intmask)
+{
+	struct device *dev = &host->pdev->dev;
+
+	if (!(intmask & SDHSTS_ERROR_MASK))
+		return false;
+
+	if (!host->cmd)
+		return true;
+
+	dev_err(dev, "sdhost_busy_irq: intmask %x, data %p\n",
+		intmask, host->mrq->data);
+	if (intmask & SDHSTS_CRC7_ERROR) {
+		host->cmd->error = -EILSEQ;
+	} else if (intmask & (SDHSTS_CRC16_ERROR |
+			      SDHSTS_FIFO_ERROR)) {
+		if (host->mrq->data)
+			host->mrq->data->error = -EILSEQ;
+		else
+			host->cmd->error = -EILSEQ;
+	} else if (intmask & SDHSTS_REW_TIME_OUT) {
+		if (host->mrq->data)
+			host->mrq->data->error = -ETIMEDOUT;
+		else
+			host->cmd->error = -ETIMEDOUT;
+	} else if (intmask & SDHSTS_CMD_TIME_OUT) {
+		host->cmd->error = -ETIMEDOUT;
+	}
+	bcm2835_dumpregs(host);
+	return true;
+}
+
 static void bcm2835_check_data_error(struct bcm2835_host *host, u32 intmask)
 {
 	if (!host->data)
@@ -983,30 +1015,10 @@ static void bcm2835_busy_irq(struct bcm2835_host *host, u32 intmask)
 	}
 	host->use_busy = false;
 
-	if (intmask & SDHSTS_ERROR_MASK) {
-		dev_err(dev, "sdhost_busy_irq: intmask %x, data %p\n",
-			intmask, host->mrq->data);
-		if (intmask & SDHSTS_CRC7_ERROR) {
-			host->cmd->error = -EILSEQ;
-		} else if (intmask & (SDHSTS_CRC16_ERROR |
-				    SDHSTS_FIFO_ERROR)) {
-			if (host->mrq->data)
-				host->mrq->data->error = -EILSEQ;
-			else
-				host->cmd->error = -EILSEQ;
-		} else if (intmask & SDHSTS_REW_TIME_OUT) {
-			if (host->mrq->data)
-				host->mrq->data->error = -ETIMEDOUT;
-			else
-				host->cmd->error = -ETIMEDOUT;
-		} else if (intmask & SDHSTS_CMD_TIME_OUT) {
-			host->cmd->error = -ETIMEDOUT;
-		}
+	if (bcm2835_check_cmd_error(host, intmask))
+		return;
 
-		bcm2835_dumpregs(host);
-	} else {
-		bcm2835_finish_command(host, NULL);
-	}
+	bcm2835_finish_command(host, NULL);
 }
 
 static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
