@@ -951,6 +951,16 @@ static void bcm2835_timeout(unsigned long data)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+static void bcm2835_check_data_error(struct bcm2835_host *host, u32 intmask)
+{
+	if (!host->data)
+		return;
+	if (intmask & (SDHSTS_CRC16_ERROR | SDHSTS_FIFO_ERROR))
+		host->data->error = -EILSEQ;
+	if (intmask & SDHSTS_REW_TIME_OUT)
+		host->data->error = -ETIMEDOUT;
+}
+
 static void bcm2835_busy_irq(struct bcm2835_host *host, u32 intmask)
 {
 	struct device *dev = &host->pdev->dev;
@@ -1007,15 +1017,7 @@ static void bcm2835_data_irq(struct bcm2835_host *host, u32 intmask)
 	if (!host->data)
 		return;
 
-	if (intmask & (SDHSTS_CRC16_ERROR |
-		       SDHSTS_FIFO_ERROR |
-		       SDHSTS_REW_TIME_OUT)) {
-		if (intmask & (SDHSTS_CRC16_ERROR |
-			       SDHSTS_FIFO_ERROR))
-			host->data->error = -EILSEQ;
-		else
-			host->data->error = -ETIMEDOUT;
-	}
+	bcm2835_check_data_error(host, intmask);
 
 	if (host->data->error) {
 		bcm2835_finish_data(host);
@@ -1043,15 +1045,7 @@ static void bcm2835_block_irq(struct bcm2835_host *host, u32 intmask)
 		return;
 	}
 
-	if (intmask & (SDHSTS_CRC16_ERROR |
-		       SDHSTS_FIFO_ERROR |
-		       SDHSTS_REW_TIME_OUT)) {
-		if (intmask & (SDHSTS_CRC16_ERROR |
-			       SDHSTS_FIFO_ERROR))
-			host->data->error = -EILSEQ;
-		else
-			host->data->error = -ETIMEDOUT;
-	}
+	bcm2835_check_data_error(host, intmask);
 
 	if (!host->dma_desc) {
 		WARN_ON(!host->blocks);
