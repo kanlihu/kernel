@@ -3823,6 +3823,7 @@ static int reset_ehci_dev(struct pci_dev *dev, int probe)
 		return -ENOMEM;
 
 	opregs = ioread8(mmio);
+	pci_info(dev, "reset quirk: opreg offset is 0x%x\n", opregs);
 	cmd = EHCI_CMD_RESET;
 	iowrite32(cmd, mmio + opregs);
 	timeout = jiffies + msecs_to_jiffies(250);
@@ -3855,6 +3856,7 @@ static int reset_xhci_dev(struct pci_dev *dev, int probe)
 		return -ENOMEM;
 
 	opregs = ioread8(mmio);
+	pci_info(dev, "reset quirk: opreg offset is 0x%x\n", opregs);
 	cmd = XHCI_CMD_RESET;
 	iowrite32(cmd, mmio + opregs);
 	timeout = jiffies + msecs_to_jiffies(250);
