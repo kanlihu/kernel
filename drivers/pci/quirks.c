@@ -3807,6 +3807,38 @@ static int reset_chelsio_generic_dev(struct pci_dev *dev, int probe)
 	return 0;
 }
 
+#define EHCI_CMD_RESET (1<<1)
+
+static int reset_ehci_dev(struct pci_dev *dev, int probe)
+{
+	void __iomem *mmio;
+	unsigned long timeout;
+	u32 opregs, cmd;
+
+	if (probe)
+		return 0;
+
+	mmio = pci_iomap(dev, 0, 0);
+	if (!mmio)
+		return -ENOMEM;
+
+	opregs = ioread8(mmio);
+	cmd = EHCI_CMD_RESET;
+	iowrite32(cmd, mmio + opregs);
+	timeout = jiffies + msecs_to_jiffies(250);
+	do {
+		cmd = ioread32(mmio + opregs);
+		if ((cmd & EHCI_CMD_RESET) == 0)
+			goto reset_complete;
+		msleep(10);
+	} while (time_before(jiffies, timeout));
+	pci_warn(dev, "timeout during reset\n");
+
+reset_complete:
+	pci_iounmap(dev, mmio);
+	return 0;
+}
+
 #define PCI_DEVICE_ID_INTEL_82599_SFP_VF   0x10ed
 #define PCI_DEVICE_ID_INTEL_IVB_M_VGA      0x0156
 #define PCI_DEVICE_ID_INTEL_IVB_M2_VGA     0x0166
@@ -3943,6 +3975,9 @@ int pci_dev_specific_reset(struct pci_dev *dev, int probe)
 		     i->device == (u16)PCI_ANY_ID))
 			return i->reset(dev, probe);
 	}
+
+	if (dev->class == PCI_CLASS_SERIAL_USB_EHCI)
+		reset_ehci_dev(dev, probe);
 
 	return -ENOTTY;
 }
