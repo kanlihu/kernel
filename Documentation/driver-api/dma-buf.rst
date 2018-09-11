@@ -257,3 +257,12 @@ fences in the kernel. This means:
   userspace is allowed to use userspace fencing or long running compute
   workloads. This also means no implicit fencing for shared buffers in these
   cases.
+
+Userspace DMA Buffer driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. kernel-doc:: include/uapi/linux/udmabuf.h
+   :doc: udmabuf
+
+.. kernel-doc:: include/uapi/linux/udmabuf.h
+   :internal:
