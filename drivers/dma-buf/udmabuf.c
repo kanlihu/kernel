@@ -173,6 +173,8 @@ static long udmabuf_create(struct miscdevice *device,
 
 	pglimit = (size_limit_mb * 1024 * 1024) >> PAGE_SHIFT;
 	for (i = 0; i < head->count; i++) {
+		if (list[i].__pad)
+			goto err;
 		if (!IS_ALIGNED(list[i].offset, PAGE_SIZE))
 			goto err;
 		if (!IS_ALIGNED(list[i].size, PAGE_SIZE))
