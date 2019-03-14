@@ -275,18 +275,18 @@ static void radeon_parse_connector_info(struct radeonfb_info *rinfo)
 	 * DEBUG is enabled
 	 */
 	chips = BIOS_IN8(offset++) >> 4;
-	pr_debug("%d chips in connector info\n", chips);
+	pr_info("%d chips in connector info\n", chips);
 	for (i = 0; i < chips; i++) {
 		tmp = BIOS_IN8(offset++);
 		connectors = tmp & 0x0f;
-		pr_debug(" - chip %d has %d connectors\n", tmp >> 4, connectors);
+		pr_info(" - chip %d has %d connectors\n", tmp >> 4, connectors);
 		for (conn = 0; ; conn++) {
 			tmp = BIOS_IN16(offset);
 			if (tmp == 0)
 				break;
 			offset += 2;
 			type = (tmp >> 12) & 0x0f;
-			pr_debug("  * connector %d of type %d (%s) : %04x\n",
+			pr_info("  * connector %d of type %d (%s) : %04x\n",
 			       conn, type, __conn_type_table[type], tmp);
 		}
 	}
@@ -483,7 +483,7 @@ void radeon_probe_screens(struct radeonfb_info *rinfo,
 		 * Auto-detecting display type (well... trying to ...)
 		 */
 		
-		pr_debug("Starting monitor auto detection...\n");
+		pr_info("Starting monitor auto detection...\n");
 
 #if defined(DEBUG) && defined(CONFIG_FB_RADEON_I2C)
 		{
@@ -779,7 +779,7 @@ void radeon_check_modes(struct radeonfb_info *rinfo, const char *mode_option)
 	if (!rinfo->panel_info.use_bios_dividers && rinfo->mon1_type != MT_CRT
 	    && rinfo->mon1_EDID) {
 		struct fb_var_screeninfo var;
-		pr_debug("Parsing EDID data for panel info\n");
+		pr_info("Parsing EDID data for panel info\n");
 		if (fb_parse_edid(rinfo->mon1_EDID, &var) == 0) {
 			if (var.xres >= rinfo->panel_info.xres &&
 			    var.yres >= rinfo->panel_info.yres)
@@ -799,7 +799,7 @@ void radeon_check_modes(struct radeonfb_info *rinfo, const char *mode_option)
 	if (rinfo->mon1_type != MT_CRT && rinfo->panel_info.valid) {
 		struct fb_var_screeninfo *var = &info->var;
 
-		pr_debug("Setting up default mode based on panel info\n");
+		pr_info("Setting up default mode based on panel info\n");
 		var->xres = rinfo->panel_info.xres;
 		var->yres = rinfo->panel_info.yres;
 		var->xres_virtual = rinfo->panel_info.xres;
@@ -847,7 +847,7 @@ void radeon_check_modes(struct radeonfb_info *rinfo, const char *mode_option)
 		int			dbsize;
 		char			modename[32];
 
-		pr_debug("Guessing panel info...\n");
+		pr_info("Guessing panel info...\n");
 		if (rinfo->panel_info.xres == 0 || rinfo->panel_info.yres == 0) {
 			u32 tmp = INREG(FP_HORZ_STRETCH) & HORZ_PANEL_SIZE;
 			rinfo->panel_info.xres = ((tmp >> HORZ_PANEL_SHIFT) + 1) * 8;
