@@ -273,25 +273,24 @@ void bochs_hw_setformat(struct bochs_device *bochs,
 	drm_dev_exit(idx);
 }
 
-void bochs_hw_setbase(struct bochs_device *bochs,
-		      int x, int y, int stride, u64 addr)
+void bochs_hw_setfb(struct bochs_device *bochs,
+		    struct drm_framebuffer *fb,
+		    int x, int y)
 {
-	unsigned long offset;
-	unsigned int vx, vy, vwidth, idx;
+	struct drm_gem_vram_object *bo = drm_gem_vram_of_gem(fb->obj[0]);
+	unsigned long offset = drm_gem_vram_offset(bo) +
+		y * fb->pitches[0] +
+		x * fb->format->cpp[0];
+	int vy = offset / fb->pitches[0];
+	int vx = (offset % fb->pitches[0]) / fb->format->cpp[0];
+	int vwidth = fb->pitches[0] / fb->format->cpp[0];
+	int idx;
 
 	if (!drm_dev_enter(bochs->dev, &idx))
 		return;
 
-	bochs->stride = stride;
-	offset = (unsigned long)addr +
-		y * bochs->stride +
-		x * (bochs->bpp / 8);
-	vy = offset / bochs->stride;
-	vx = (offset % bochs->stride) * 8 / bochs->bpp;
-	vwidth = stride * 8 / bochs->bpp;
-
 	DRM_DEBUG_DRIVER("x %d, y %d, addr %llx -> offset %lx, vx %d, vy %d\n",
-			 x, y, addr, offset, vx, vy);
+			 x, y, drm_gem_vram_offset(bo), offset, vx, vy);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_VIRT_WIDTH, vwidth);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_X_OFFSET, vx);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_Y_OFFSET, vy);
