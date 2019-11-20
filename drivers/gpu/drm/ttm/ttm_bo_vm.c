@@ -336,8 +336,16 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
 	 */
 	for (i = 0; i < num_prefault; ++i) {
 		if (bo->mem.bus.is_iomem) {
+			if (page_offset == 0)
+				DRM_INFO("%s: bo %p, vma %p, iomem, vma map %p\n",
+					 __func__, bo, vma,
+					 vma->vm_file->f_mapping);
 			pfn = ttm_bo_io_mem_pfn(bo, page_offset);
 		} else {
+			if (page_offset == 0)
+				DRM_INFO("%s: bo %p, vma %p, page %p, vma map %p\n", __func__,
+					 bo, vma, ttm->pages[0],
+					 vma->vm_file->f_mapping);
 			page = ttm->pages[page_offset];
 			if (unlikely(!page && i == 0)) {
 				return VM_FAULT_OOM;
@@ -406,6 +414,7 @@ void ttm_bo_vm_open(struct vm_area_struct *vma)
 {
 	struct ttm_buffer_object *bo = vma->vm_private_data;
 
+	DRM_INFO("%s: bo %p, vma %p\n", __func__, bo, vma);
 	WARN_ON(bo->bdev->dev_mapping != vma->vm_file->f_mapping);
 
 	ttm_bo_get(bo);
@@ -416,6 +425,7 @@ void ttm_bo_vm_close(struct vm_area_struct *vma)
 {
 	struct ttm_buffer_object *bo = vma->vm_private_data;
 
+	DRM_INFO("%s: bo %p, vma %p\n", __func__, bo, vma);
 	ttm_bo_put(bo);
 	vma->vm_private_data = NULL;
 }
@@ -575,6 +585,11 @@ int ttm_bo_mmap(struct file *filp, struct vm_area_struct *vma,
 	if (unlikely(ret != 0))
 		goto out_unref;
 
+	DRM_INFO("%s: bo %p, vma %p, pgoff %lx, bdev map %p, vma map %p\n",
+		 __func__,
+		 bo, vma, vma->vm_pgoff,
+		 bo->bdev->dev_mapping,
+		 vma->vm_file->f_mapping);
 	ttm_bo_mmap_vma_setup(bo, vma);
 	return 0;
 out_unref:
@@ -586,6 +601,11 @@ EXPORT_SYMBOL(ttm_bo_mmap);
 int ttm_bo_mmap_obj(struct vm_area_struct *vma, struct ttm_buffer_object *bo)
 {
 	ttm_bo_get(bo);
+	DRM_INFO("%s: bo %p, vma %p, pgoff %lx, bdev map %p, vma map %p\n",
+		 __func__,
+		 bo, vma, vma->vm_pgoff,
+		 bo->bdev->dev_mapping,
+		 vma->vm_file->f_mapping);
 	ttm_bo_mmap_vma_setup(bo, vma);
 	return 0;
 }
