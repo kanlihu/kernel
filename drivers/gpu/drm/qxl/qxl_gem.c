@@ -39,6 +39,10 @@ void qxl_gem_object_free(struct drm_gem_object *gobj)
 	qxl_surface_evict(qdev, qobj, false);
 
 	tbo = &qobj->tbo;
+	if (tbo->pin_count != 0) {
+		dump_stack();
+		DRM_ERROR("pin count %d\n", tbo->pin_count);
+	}
 	ttm_bo_put(tbo);
 }
 
