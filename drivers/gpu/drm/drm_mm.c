@@ -128,15 +128,15 @@ static void show_leaks(struct drm_mm *mm)
 
 	list_for_each_entry(node, drm_mm_nodes(mm), node_list) {
 		if (!node->stack) {
-			DRM_ERROR("node [%08llx + %08llx]: unknown owner\n",
-				  node->start, node->size);
+			DRM_INFO("%s: node [%08llx + %08llx]: unknown owner\n",
+				 __func__, node->start, node->size);
 			continue;
 		}
 
 		nr_entries = stack_depot_fetch(node->stack, &entries);
 		stack_trace_snprint(buf, BUFSZ, entries, nr_entries, 0);
-		DRM_ERROR("node [%08llx + %08llx]: inserted at\n%s",
-			  node->start, node->size, buf);
+		DRM_INFO("%s: node [%08llx + %08llx]: inserted at\n%s",
+			 __func__, node->start, node->size, buf);
 	}
 
 	kfree(buf);
@@ -995,9 +995,10 @@ EXPORT_SYMBOL(drm_mm_init);
  */
 void drm_mm_takedown(struct drm_mm *mm)
 {
-	if (WARN(!drm_mm_clean(mm),
-		 "Memory manager not clean during takedown.\n"))
-		show_leaks(mm);
+	if (drm_mm_clean(mm))
+		return;
+	show_leaks(mm);
+	WARN(true, "Memory manager not clean during takedown.\n");
 }
 EXPORT_SYMBOL(drm_mm_takedown);
 
