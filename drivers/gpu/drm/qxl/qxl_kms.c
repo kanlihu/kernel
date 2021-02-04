@@ -284,6 +284,15 @@ vram_mapping_free:
 	return r;
 }
 
+static void qxl_print_mem(struct qxl_device *qdev)
+{
+	struct drm_printer p;
+
+	p = drm_info_printer(qdev->ddev.dev);
+	ttm_resource_manager_debug(ttm_manager_type(&qdev->mman.bdev, TTM_PL_VRAM), &p);
+	ttm_resource_manager_debug(ttm_manager_type(&qdev->mman.bdev, TTM_PL_PRIV), &p);
+}
+
 void qxl_device_fini(struct qxl_device *qdev)
 {
 	int cur_idx;
@@ -308,6 +317,9 @@ void qxl_device_fini(struct qxl_device *qdev)
 	flush_work(&qdev->gc_work);
 	qxl_surf_evict(qdev);
 	qxl_vram_evict(qdev);
+
+	DRM_INFO("%s:%d %d\n", __func__, __LINE__, atomic_read(&qdev->release_count));
+	qxl_print_mem(qdev);
 
 	qxl_gem_fini(qdev);
 	qxl_bo_fini(qdev);
