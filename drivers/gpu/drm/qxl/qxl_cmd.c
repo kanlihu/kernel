@@ -378,6 +378,7 @@ void qxl_io_destroy_primary(struct qxl_device *qdev)
 {
 	wait_for_io_cmd(qdev, 0, QXL_IO_DESTROY_PRIMARY_ASYNC);
 	qdev->primary_bo->is_primary = false;
+	qxl_bo_unpin(qdev->primary_bo);
 	drm_gem_object_put(&qdev->primary_bo->tbo.base);
 	qdev->primary_bo = NULL;
 }
@@ -389,6 +390,7 @@ void qxl_io_create_primary(struct qxl_device *qdev, struct qxl_bo *bo)
 	if (WARN_ON(qdev->primary_bo))
 		return;
 
+	qxl_bo_pin(bo);
 	DRM_DEBUG_DRIVER("qdev %p, ram_header %p\n", qdev, qdev->ram_header);
 	create = &qdev->ram_header->create_surface;
 	create->format = bo->surf.format;
