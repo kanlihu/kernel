@@ -159,6 +159,8 @@ int qxl_bo_kmap(struct qxl_bo *bo, struct dma_buf_map *map)
 {
 	int r;
 
+	dma_resv_assert_held(bo->tbo.base.resv);
+
 	if (bo->kptr) {
 		bo->map_count++;
 		goto out;
@@ -177,6 +179,19 @@ int qxl_bo_kmap(struct qxl_bo *bo, struct dma_buf_map *map)
 out:
 	*map = bo->map;
 	return 0;
+}
+
+int qxl_bo_kmap_unlocked(struct qxl_bo *bo, struct dma_buf_map *map)
+{
+	int r;
+
+	r = qxl_bo_reserve(bo);
+	if (r)
+		return r;
+
+	r = qxl_bo_kmap(bo, map);
+	qxl_bo_unreserve(bo);
+	return r;
 }
 
 void *qxl_bo_kmap_atomic_page(struct qxl_device *qdev,
@@ -214,6 +229,8 @@ fallback:
 
 void qxl_bo_kunmap(struct qxl_bo *bo)
 {
+	dma_resv_assert_held(bo->tbo.base.resv);
+
 	if (bo->kptr == NULL)
 		return;
 	bo->map_count--;
@@ -221,6 +238,16 @@ void qxl_bo_kunmap(struct qxl_bo *bo)
 		return;
 	bo->kptr = NULL;
 	ttm_bo_vunmap(&bo->tbo, &bo->map);
+}
+
+void qxl_bo_kunmap_unlocked(struct qxl_bo *bo)
+{
+	int r;
+
+	r = qxl_bo_reserve(bo);
+	WARN_ON(r);
+	qxl_bo_kunmap(bo);
+	qxl_bo_unreserve(bo);
 }
 
 void qxl_bo_kunmap_atomic_page(struct qxl_device *qdev,

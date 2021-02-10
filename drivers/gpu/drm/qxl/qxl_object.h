@@ -65,7 +65,9 @@ extern int qxl_bo_create(struct qxl_device *qdev,
 			 struct qxl_surface *surf,
 			 struct qxl_bo **bo_ptr);
 extern int qxl_bo_kmap(struct qxl_bo *bo, struct dma_buf_map *map);
+int qxl_bo_kmap_unlocked(struct qxl_bo *bo, struct dma_buf_map *map);
 extern void qxl_bo_kunmap(struct qxl_bo *bo);
+extern void qxl_bo_kunmap_unlocked(struct qxl_bo *bo);
 void *qxl_bo_kmap_atomic_page(struct qxl_device *qdev, struct qxl_bo *bo, int page_offset);
 void qxl_bo_kunmap_atomic_page(struct qxl_device *qdev, struct qxl_bo *bo, void *map);
 extern struct qxl_bo *qxl_bo_ref(struct qxl_bo *bo);
