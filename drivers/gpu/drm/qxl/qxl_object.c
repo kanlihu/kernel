@@ -160,6 +160,7 @@ int qxl_bo_kmap(struct qxl_bo *bo, struct dma_buf_map *map)
 	int r;
 
 	dma_resv_assert_held(bo->tbo.base.resv);
+	WARN_ON(!bo->tbo.pin_count);
 
 	if (bo->kptr) {
 		bo->map_count++;

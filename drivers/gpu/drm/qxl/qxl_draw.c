@@ -48,6 +48,7 @@ static struct qxl_rect *drawable_set_clipping(struct qxl_device *qdev,
 	struct qxl_clip_rects *dev_clips;
 	int ret;
 
+	ttm_bo_pin(&clips_bo->tbo);
 	ret = qxl_bo_kmap(clips_bo, &map);
 	if (ret)
 		return NULL;
@@ -202,6 +203,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 	if (ret)
 		goto out_release_backoff;
 
+	qxl_bo_pin(bo);
 	ret = qxl_bo_kmap(bo, &surface_map);
 	if (ret)
 		goto out_release_backoff;
@@ -211,6 +213,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 			     left - dumb_shadow_offset,
 			     top, width, height, depth, stride);
 	qxl_bo_kunmap(bo);
+	qxl_bo_unpin(bo);
 	if (ret)
 		goto out_release_backoff;
 
@@ -248,6 +251,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 		rects[i].bottom = clips_ptr->y2;
 	}
 	qxl_bo_kunmap(clips_bo);
+	ttm_bo_unpin(&clips_bo->tbo);
 
 	qxl_release_fence_buffer_objects(release);
 	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
