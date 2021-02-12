@@ -59,9 +59,15 @@ int qxl_gem_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map)
 	struct qxl_bo *bo = gem_to_qxl_bo(obj);
 	int ret;
 
-	ret = qxl_bo_kmap_unlocked(bo, map);
+	ret = qxl_bo_pin(bo);
 	if (ret < 0)
 		return ret;
+
+	ret = qxl_bo_kmap_unlocked(bo, map);
+	if (ret < 0) {
+		qxl_bo_unpin(bo);
+		return ret;
+	}
 
 	return 0;
 }
@@ -72,6 +78,7 @@ void qxl_gem_prime_vunmap(struct drm_gem_object *obj,
 	struct qxl_bo *bo = gem_to_qxl_bo(obj);
 
 	qxl_bo_kunmap_unlocked(bo);
+	qxl_bo_unpin(bo);
 }
 
 int qxl_gem_prime_mmap(struct drm_gem_object *obj,
