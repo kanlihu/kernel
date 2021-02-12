@@ -203,7 +203,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 	if (ret)
 		goto out_release_backoff;
 
-	qxl_bo_pin(bo);
+	ttm_bo_pin(&bo->tbo);
 	ret = qxl_bo_kmap(bo, &surface_map);
 	if (ret)
 		goto out_release_backoff;
@@ -213,7 +213,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 			     left - dumb_shadow_offset,
 			     top, width, height, depth, stride);
 	qxl_bo_kunmap(bo);
-	qxl_bo_unpin(bo);
+	ttm_bo_unpin(&bo->tbo);
 	if (ret)
 		goto out_release_backoff;
 
