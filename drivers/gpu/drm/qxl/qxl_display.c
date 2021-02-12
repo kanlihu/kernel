@@ -600,7 +600,7 @@ static void qxl_cursor_atomic_update(struct drm_plane *plane,
 		user_bo = gem_to_qxl_bo(obj);
 
 		/* pinning is done in the prepare/cleanup framevbuffer */
-		ret = qxl_bo_kmap(user_bo, &user_map);
+		ret = qxl_bo_kmap_unlocked(user_bo, &user_map);
 		if (ret)
 			goto out_free_release;
 		user_ptr = user_map.vaddr; /* TODO: Use mapping abstraction properly */
